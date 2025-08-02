@@ -1,16 +1,23 @@
-# intent_service.py
-from langchain.chat_models import ChatOpenAI
+# from langchain_community.chat_models import ChatOpenAI
+from langchain_openai import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate
 from typing import Dict
+import os
+from dotenv import load_dotenv
+load_dotenv()
 
-llm = ChatOpenAI(api_key="OPENAI_API_KEY")
+api_key = os.getenv("OPENAI_API_KEY")
+if not api_key:
+    raise ValueError("OPENAI_API_KEY 환경변수가 설정되지 않았습니다.")
+
+llm = ChatOpenAI(api_key=api_key)
 
 async def extract_intent(text: str) -> Dict[str, str]:
     prompt = ChatPromptTemplate.from_template(
         "다음 텍스트에서 사용자의 intent를 간단히 추출해줘: {text}"
     )
     chain = prompt | llm
-    response = chain.invoke({"text": text})
+    response = await chain.ainvoke({"text": text})
 
-    # 여기서는 단순 예시로 직접 반환. 실제로는 AI 응답 파싱 필요
-    return {"intent": response.content.strip()} 
+    content = getattr(response, "content", "").strip()
+    return {"intent": content}

@@ -16,10 +16,3 @@ async def get_intent(request: IntentRequest):
 async def validate_parameters(request: ValidateRequest):
     result = validate(request.intent, request.parameters)
     return result
-
-@router.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    return JSONResponse(
-        status_code=500,
-        content={"message": f"오류 발생: {str(exc)}"}
-    ) 
