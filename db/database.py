@@ -14,3 +14,32 @@ def get_required_params(intent: str):
     rows = cursor.fetchall()
     conn.close()
     return [row["param"] for row in rows]
+
+def get_shortcut(function_id: str):
+    conn = get_db_connection()
+    cursor = conn.execute("SELECT shortcut FROM functions WHERE function_id = ?", (function_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [row["shortcut"] for row in rows]
+
+def get_function_info(intent: str):
+    conn = get_db_connection()
+    cursor = conn.execute("""
+        SELECT f.function_id, f.shortcut 
+        FROM functions f
+        JOIN intents i ON f.function_id = i.function_id
+        WHERE i.intent = ?
+    """, (intent,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if row:
+        return {
+            "function_id": row["function_id"],
+            "shortcut": row["shortcut"]
+        }
+    else:
+        return {
+            "function_id": "",
+            "shortcut": ""
+        }

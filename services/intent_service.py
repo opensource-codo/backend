@@ -4,6 +4,7 @@ from langchain.prompts import ChatPromptTemplate
 from typing import Dict
 import os
 from dotenv import load_dotenv
+from db.database import get_function_info as db_get_function_info
 load_dotenv()
 
 api_key = os.getenv("OPENAI_API_KEY")
@@ -21,3 +22,6 @@ async def extract_intent(text: str) -> Dict[str, str]:
 
     content = getattr(response, "content", "").strip()
     return {"intent": content}
+
+async def get_function_info(intent: str) -> Dict[str, str]:
+    return db_get_function_info(intent)
