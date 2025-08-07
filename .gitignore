@@ -3,3 +3,6 @@ logs/
 
 .env
 venv/
+
+api\v1\__pycache__
+*.pyc
