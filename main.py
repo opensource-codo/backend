@@ -9,7 +9,10 @@ app = FastAPI(title="Intent Analysis API", version="1.0.0")
 # CORS 설정
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3001"],  # 프론트엔드 포트에 맞게 조정
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:3001"
+    ],  # 프론트엔드 포트에 맞게 조정
     allow_credentials=True,
     allow_methods=["*"],  # GET, POST, OPTIONS 등 모두 허용
     allow_headers=["*"],
