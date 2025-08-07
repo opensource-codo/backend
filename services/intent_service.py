@@ -5,6 +5,8 @@ from typing import Dict
 import os
 from dotenv import load_dotenv
 from db.database import get_function_info as db_get_function_info
+from db.assistantdb import get_function_info as assistant_get_function_info
+
 load_dotenv()
 
 api_key = os.getenv("OPENAI_API_KEY")
@@ -24,4 +26,4 @@ async def extract_intent(text: str) -> Dict[str, str]:
     return {"intent": content}
 
 async def get_function_info(intent: str) -> Dict[str, str]:
-    return db_get_function_info(intent)
+    return assistant_get_function_info(intent) 

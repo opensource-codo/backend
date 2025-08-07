@@ -3,6 +3,7 @@ from sqlite3 import Connection
 
 DB_PATH = "intents.db"
 
+
 def get_db_connection() -> Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -43,3 +44,6 @@ def get_function_info(intent: str):
             "function_id": "",
             "shortcut": ""
         }
+    
+  
+    

@@ -24,11 +24,12 @@ class ValidateRequest(BaseModel):
 
 class IntentResponse(BaseModel):
     intent: str
-    method: str
+    method: MethodName
     parameters: Dict[str, str]
     status: str
-    missing_params: List[str]
+    missing_params: List[str] = []
     message: str
+    
 
 class ValidationResponse(BaseModel):
     valid: bool
