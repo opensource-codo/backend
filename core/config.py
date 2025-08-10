@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Intent Analysis API"
     
     # 데이터베이스 설정
-    DATABASE_URL: str = "intents.db"
+    DATABASE_URL: str = "assistant.db"
     
     # OpenAI 설정
     OPENAI_API_KEY: Optional[str] = None

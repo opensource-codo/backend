@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from fastapi.middleware.cors import CORSMiddleware  # ✅ 추가
+from fastapi.middleware.cors import CORSMiddleware  
 from api.v1.api import api_router
 import uvicorn
 
