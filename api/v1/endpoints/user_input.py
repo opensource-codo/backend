@@ -8,63 +8,118 @@ from services.executor_service import execute_action
 from schemas.intent import UserRequest, MethodName, IntentResponse
 
 router = APIRouter()
+SIM_THRESHOLD = 0.75
 
 @router.post("/", response_model=IntentResponse)
 async def handle_user_input(request: UserRequest):
     # RAG를 사용하여 intent 추출
     intent_result = await extract_intent_with_rag(request.text)
-    intent = intent_result.get("intent")
-    similarity = intent_result.get("similarity", 0)
+    intent = (intent_result.get("intent") or "").strip()
+    similarity = float(intent_result.get("similarity", 0.0))
     method_used = intent_result.get("method", "unknown")
 
+    if not intent:
+        # 유사 intent 제안
+        alts = await search_similar_intents(request.text, n_results=5)
+        return IntentResponse(
+            intent="",
+            method=request.method,
+            parameters={},
+            status="no_intent",
+            message="의도를 식별하지 못했어요. 아래 후보를 참고해 주세요.",
+            # TODO : Response 수정 필요
+            # similar_intents=alts,  
+            # similarity=similarity,
+            # method_used=method_used,
+        )
+
+    if similarity < SIM_THRESHOLD:
+            alts = await search_similar_intents(request.text, n_results=5)
+            return IntentResponse(
+                intent=intent,
+                method=request.method,
+                parameters={},
+                status="low_confidence",
+                message=f"의도 신뢰도가 낮아요({similarity:.2f}). 아래 후보 중에서 선택해 주세요.",
+                similar_intents=alts,
+                similarity=similarity,
+                method_used=method_used,
+            )
+            
     function_info = await get_function_info(intent)
-    function_id = function_info["function_id"]
-    shortcut = function_info["shortcut"]
+    function_id = function_info.get("function_id") or ""
+    shortcut = function_info.get("shortcut") or ""
 
     parameters = {}
 
     if request.method == "GUIDE":
         # 가이드: OpenAI에 메시지를 넘겨 설명 받기
-        guide_response = await generate_guide_response(request.text, intent, shortcut)
+        guide = await generate_guide_response(request.text, intent, shortcut)
+        # TODO : IntentResponse 수정 필요
         return IntentResponse(
             intent=intent,
             method=request.method,
-            parameters=parameters,
+            parameters={},
             status="guide_completed",
-            message=guide_response
+            message=guide,
+            shortcut=shortcut,
+            similarity=similarity,
+            method_used=method_used,
         )
 
-    elif request.method == "EXECUTION":
-        # 파라미터 검증
-        validation_result = validate(intent, parameters)
-        if not validation_result["valid"]:
+
+    if request.method == "EXECUTION":
+        v = validate(intent, parameters=request.parameters or {}, method="EXECUTION", text=request.text)
+
+        if not v["valid"]:
             return IntentResponse(
                 intent=intent,
                 method=request.method,
-                parameters=parameters,
+                parameters=v.get("normalized_params", {}),
                 status="info_required",
-                missing_params=validation_result.get("missing_params", []),
-                message="필요한 정보를 더 입력해주세요."
+                missing_params=v.get("missing_params", []),
+                message=v.get("message", "필요한 정보를 더 입력해주세요."),
+                similarity=similarity,
+                method_used=method_used,
+                shortcut=shortcut,
             )
 
-        # action executor 호출
-        exec_result = execute_action(intent, parameters)
+        # 위험 작업이면 먼저 확인부터 요청
+        if v.get("requires_confirmation"):
+            return IntentResponse(
+                intent=intent,
+                method=request.method,
+                parameters=v.get("normalized_params", {}),
+                status="confirm_required",
+                message="이 작업은 위험할 수 있어요. 확인 후 다시 실행해주세요.",
+                similarity=similarity,
+                method_used=method_used,
+                shortcut=shortcut,
+            )
+
+        # 정상 실행: 반드시 '정규화된 파라미터'로 실행!
+        params = v.get("normalized_params", {})
+        exec_result = await execute_action(intent, params)  # 비동기라면 await로 변경
+
         return IntentResponse(
             intent=intent,
             method=request.method,
-            parameters=parameters,
+            parameters=params,
             status="executed",
             message=exec_result.get("message"),
-            shortcut=exec_result.get("shortcut")
+            shortcut=exec_result.get("shortcut", shortcut),
+            similarity=similarity,
+            method_used=method_used,
         )
     
-    else:
-        return IntentResponse(
+    return IntentResponse(
             intent=intent,
             method=request.method,
-            parameters=parameters,
+            parameters={},
             status="unknown_method",
-            message="지원되지 않는 method입니다."
+            message="지원되지 않는 method입니다.",
+            similarity=similarity,
+            method_used=method_used,
         )
 
 @router.post("/search")
