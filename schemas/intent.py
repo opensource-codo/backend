@@ -2,16 +2,12 @@ from pydantic import BaseModel, Field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Literal
 
-class UserRequest(BaseModel):
-    text: str
-    method: str  # GUIDE, EXECUTION 등
-
 class IntentRequest(BaseModel):
     text: str
 
 class MethodName(str, Enum):
-    guide = "GUIDE"
-    execution = "EXECUTION"
+    GUIDE = "GUIDE"
+    EXECUTION = "EXECUTION"
     # simulation = "simulation"
 
 class UserRequest(BaseModel):
