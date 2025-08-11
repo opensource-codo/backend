@@ -114,7 +114,7 @@ class ValidatorService:
         Args:
             intent: 검증할 intent
             parameters: 검증할 파라미터
-            method: 실행 방법 (GUIDE, EXECUTION, SIMULATION)
+            method: 실행 방법 (GUIDE, EXECUTION)
             text: 원본 텍스트 (파라미터 추출용)
         
         Returns:
@@ -152,18 +152,18 @@ class ValidatorService:
         # 스키마에 따른 검증 및 정규화
         normalized, missing, errors = self._apply_schema(merged_params, schema)
         
-        # SIMULATION: 필수 파라미터 누락 허용
-        if method == "SIMULATION":
-            valid = True
-            msg = "시뮬레이션 모드: 일부 파라미터가 누락되었지만 실행 가능합니다." if missing else "시뮬레이션 모드: 모든 파라미터가 준비되었습니다."
-            return {
-                "valid": valid,
-                "missing_params": missing,
-                "normalized_params": normalized,
-                "errors": errors,
-                "requires_confirmation": bool(schema.get("danger", False)),
-                "message": msg
-            }
+        # # SIMULATION: 필수 파라미터 누락 허용
+        # if method == "SIMULATION":
+        #     valid = True
+        #     msg = "시뮬레이션 모드: 일부 파라미터가 누락되었지만 실행 가능합니다." if missing else "시뮬레이션 모드: 모든 파라미터가 준비되었습니다."
+        #     return {
+        #         "valid": valid,
+        #         "missing_params": missing,
+        #         "normalized_params": normalized,
+        #         "errors": errors,
+        #         "requires_confirmation": bool(schema.get("danger", False)),
+        #         "message": msg
+        #     }
         
         # EXECUTION: 모든 필수 파라미터가 필요
         if method == "EXECUTION":

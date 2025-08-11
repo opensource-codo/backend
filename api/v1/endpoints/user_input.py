@@ -27,10 +27,9 @@ async def handle_user_input(request: UserRequest):
             parameters={},
             status="no_intent",
             message="의도를 식별하지 못했어요. 아래 후보를 참고해 주세요.",
-            # TODO : Response 수정 필요
-            # similar_intents=alts,  
-            # similarity=similarity,
-            # method_used=method_used,
+            similar_intents=alts,  
+            similarity=similarity,
+            method_used=method_used,
         )
 
     if similarity < SIM_THRESHOLD:
