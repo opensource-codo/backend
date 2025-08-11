@@ -1,398 +1,176 @@
-from __future__ import annotations
-
-import os
-import re
-import shutil
+# services/executor_service.py
 import asyncio
-import sqlite3
-import datetime
-import platform
-from typing import Any, Dict, Optional, Tuple
+import os
+import shlex
+from typing import Dict, Any, Callable, Awaitable, Optional
+from dataclasses import dataclass
+from jinja2 import Template
 
-# ─────────────────────────────────────────────────────────────────────────────
-# DB 유틸
-# ─────────────────────────────────────────────────────────────────────────────
-def _get_conn(db_path: str):
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    return conn
+# ── 레지스트리 ─────────────────────────────────────────────────
+_HANDLER_REGISTRY: Dict[str, "ActionHandler"] = {}
 
-def _resolve_function_by_intent(intent: str, db_path: str = "assistant.db") -> Dict[str, Optional[str]]:
+def register(function_key: str):
+    def deco(cls):
+        _HANDLER_REGISTRY[function_key] = cls()
+        return cls
+    return deco
+
+# ── 공통 결과 타입 ─────────────────────────────────────────────
+@dataclass
+class ExecResult:
+    ok: bool
+    message: str
+    shortcut: Optional[str] = None
+    data: Optional[Dict[str, Any]] = None
+
+# ── 베이스 핸들러 ─────────────────────────────────────────────
+class ActionHandler:
+    async def execute(self, params: Dict[str, Any]) -> ExecResult:
+        raise NotImplementedError
+
+    async def simulate(self, params: Dict[str, Any]) -> ExecResult:
+        # 시뮬레이션 기본 구현
+        return ExecResult(ok=True, message=f"[SIMULATION] Would execute with {params}")
+
+    async def guide(self, params: Dict[str, Any]) -> ExecResult:
+        # 가이드 기본 구현
+        return ExecResult(ok=True, message="이 작업은 실행 모드에서만 수행됩니다.")
+
+# ── 스크립트형(데이터 드리븐) 공통 핸들러 ─────────────────────
+class GenericScriptHandler(ActionHandler):
     """
-    intents → functions 조인으로 function_key, function_name, shortcut, script_path/command 조회
-    스키마에 맞게 JOIN 키를 조정하세요.
+    DB의 functions 테이블에서 script_path/script_command/shortcut를 읽어
+    템플릿으로 인자 바인딩 후 실행.
     """
-    with _get_conn(db_path) as conn:
-        # 스키마 A) intents.function_id ↔ functions.id
-        row = conn.execute(
-            """
-            SELECT
-                f.function_key,
-                f.function_name,
-                f.shortcut,
-                f.script_path,
-                f.script_command
-            FROM intents i
-            LEFT JOIN functions f ON i.function_id = f.id
-            WHERE i.intent = ?
-            """,
-            (intent,),
-        ).fetchone()
+    def __init__(self, script_path: str, script_command: str, shortcut: Optional[str] = None, shell: str = "powershell"):
+        self.script_path = script_path
+        self.script_command = script_command
+        self.shortcut = shortcut
+        self.shell = shell  # "powershell" | "cmd" | "sh"
 
-        if row:
-            return dict(row)
+    def _render_command(self, params: Dict[str, Any]) -> str:
+        # Jinja 템플릿으로 안전 바인딩 (공백/따옴표는 쉘에서 처리)
+        return Template(self.script_command).render(**(params or {}), SCRIPT_PATH=self.script_path)
 
-    # 폴백: 못 찾으면 None
+    async def execute(self, params: Dict[str, Any]) -> ExecResult:
+        cmd = self._render_command(params)
+
+        if self.shell == "powershell":
+            argv = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", cmd]
+        elif self.shell == "cmd":
+            argv = ["cmd", "/c", cmd]
+        else:  # POSIX
+            argv = ["sh", "-c", cmd]
+
+        proc = await asyncio.create_subprocess_exec(
+            *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        out, err = await proc.communicate()
+        if proc.returncode == 0:
+            return ExecResult(ok=True, message=out.decode("utf-8", "ignore").strip(), shortcut=self.shortcut)
+        return ExecResult(ok=False, message=err.decode("utf-8", "ignore").strip(), shortcut=self.shortcut)
+
+# ── 파이썬 구현형 핸들러들(예: 파일 작업) ─────────────────────
+@register("copy_file")
+class CopyFileHandler(ActionHandler):
+    async def execute(self, params: Dict[str, Any]) -> ExecResult:
+        import shutil
+        src = params["src_path"]; dst = params["dst_path"]
+        try:
+            # 디렉터리면 파일명 보존
+            if os.path.isdir(dst):
+                base = os.path.basename(src)
+                dst = os.path.join(dst, base)
+            shutil.copy2(src, dst)
+            return ExecResult(ok=True, message=f"복사 완료: {src} → {dst}", shortcut="Ctrl+C, Ctrl+V")
+        except Exception as e:
+            return ExecResult(ok=False, message=f"복사 실패: {e}")
+
+@register("delete_file")
+class DeleteFileHandler(ActionHandler):
+    async def execute(self, params: Dict[str, Any]) -> ExecResult:
+        import os
+        target = params["target_path"]
+        try:
+            if os.path.isdir(target):
+                import shutil
+                shutil.rmtree(target)
+            else:
+                os.remove(target)
+            return ExecResult(ok=True, message=f"삭제 완료: {target}")
+        except Exception as e:
+            return ExecResult(ok=False, message=f"삭제 실패: {e}")
+
+@register("rename_file")
+class RenameFileHandler(ActionHandler):
+    async def execute(self, params: Dict[str, Any]) -> ExecResult:
+        import os
+        old = params["old_path"]; new = params["new_path"]
+        try:
+            os.replace(old, new)
+            return ExecResult(ok=True, message=f"이름 변경 완료: {old} → {new}")
+        except Exception as e:
+            return ExecResult(ok=False, message=f"이름 변경 실패: {e}")
+
+@register("screenshot")
+class ScreenshotHandler(ActionHandler):
+    async def execute(self, params: Dict[str, Any]) -> ExecResult:
+        # 예시: 외부 도구 호출 or pyautogui
+        try:
+            import datetime, pathlib
+            import pyautogui
+            save_path = params.get("save_path") or str(pathlib.Path.cwd() / f"screenshot_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
+            region = params.get("region", "full")
+            if region == "full":
+                img = pyautogui.screenshot()
+                img.save(save_path)
+            else:
+                # 간단 예시 (active_window/custom은 실제 구현 필요)
+                img = pyautogui.screenshot()
+                img.save(save_path)
+            return ExecResult(ok=True, message=f"스크린샷 저장: {save_path}")
+        except Exception as e:
+            return ExecResult(ok=False, message=f"스크린샷 실패: {e}")
+
+@register("block_remote_access")
+class BlockRemoteAccessHandler(ActionHandler):
+    async def execute(self, params: Dict[str, Any]) -> ExecResult:
+        # 실제 구현은 방화벽/서비스 설정 등을 다뤄야 함(위험 작업)
+        enabled = bool(params.get("enabled"))
+        # 여기서는 데모 메시지만
+        state = "차단" if enabled else "해제"
+        return ExecResult(ok=True, message=f"원격 접속 {state} 완료(데모)")
+
+# ── 라우터(엔트리 포인트) ─────────────────────────────────────
+async def execute_action(function_key: str, parameters: Dict[str, Any], shortcut: Optional[str] = None) -> Dict[str, Any]:
+    """
+    1) 파이썬 핸들러가 등록돼 있으면 그걸 사용
+    2) 없으면 DB(functions)에서 script_command가 있으면 GenericScriptHandler로 실행
+    3) 둘 다 없으면 오류
+    """
+    handler = _HANDLER_REGISTRY.get(function_key)
+
+    if handler is None:
+        # DB 조회해서 script_command가 있으면 스크립트 핸들러로 실행
+        from .table_access import get_function_by_key  # 네가 만드는 작은 DAO
+        row = get_function_by_key(function_key)  # {function_key, script_path, script_command, shortcut}
+        if row and (row.get("script_path") or row.get("script_command")):
+            handler = GenericScriptHandler(
+                script_path=row.get("script_path") or "",
+                script_command=row.get("script_command") or "",
+                shortcut=row.get("shortcut"),
+                shell="powershell"  # 필요 시 cmd/sh
+            )
+        else:
+            return {"ok": False, "message": f"핸들러 없음: {function_key}"}
+
+    res = await handler.execute(parameters or {})
+    # 기존 IntentResponse와 호환되는 형태로 리턴
     return {
-        "function_key": None,
-        "function_name": None,
-        "shortcut": None,
-        "script_path": None,
-        "script_command": None,
+        "ok": res.ok,
+        "message": res.message,
+        "shortcut": res.shortcut or shortcut
     }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 퍼블릭 API
-# ─────────────────────────────────────────────────────────────────────────────
-async def execute_action(intent: str, params: Dict[str, Any], db_path: str = "assistant.db") -> Dict[str, Any]:
-    """
-    비동기 실행 엔트리포인트.
-    - intent로 function_key를 해석하고,
-    - 해당 핸들러를 호출하여 작업 수행
-    반환: {"message": str, "shortcut": Optional[str]}
-    """
-    info = _resolve_function_by_intent(intent, db_path=db_path)
-    function_key = (info.get("function_key") or "").strip()
 
-    # function_key가 비어있으면 intent 문자열로도 한 번 매칭 시도(유연성)
-    if not function_key:
-        function_key = _guess_function_key_from_intent(intent)
-
-    shortcut = info.get("shortcut")
-
-    # 라우팅
-    if function_key == "copy_file":
-        msg = await _handle_copy_file(params)
-    elif function_key == "delete_file":
-        msg = await _handle_delete_file(params)
-    elif function_key == "rename_file":
-        msg = await _handle_rename_file(params)
-    elif function_key == "screenshot":
-        msg = await _handle_screenshot(params)
-    elif function_key == "block_remote_access":
-        msg = await _handle_block_remote_access(params)
-    else:
-        # 스크립트 기반 기능 지원(선택): functions.script_command/script_path가 있으면 실행
-        msg = await _maybe_run_script(info, params)
-        if msg is None:
-            return {
-                "message": f"알 수 없는 기능입니다. (intent='{intent}', function_key='{function_key}')",
-                "shortcut": shortcut,
-            }
-
-    return {"message": msg, "shortcut": shortcut}
-
-def _guess_function_key_from_intent(intent: str) -> str:
-    s = intent.strip().lower()
-    if any(k in s for k in ["복사", "copy"]):
-        return "copy_file"
-    if any(k in s for k in ["삭제", "지워", "remove", "delete"]):
-        return "delete_file"
-    if any(k in s for k in ["이름 바꿔", "이름변경", "rename"]):
-        return "rename_file"
-    if any(k in s for k in ["캡쳐", "캡처", "스크린샷", "screenshot"]):
-        return "screenshot"
-    if any(k in s for k in ["원격", "remote", "rdp", "접속 차단", "차단", "해제"]):
-        return "block_remote_access"
-    return ""
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 핸들러들
-# ─────────────────────────────────────────────────────────────────────────────
-async def _handle_copy_file(params: Dict[str, Any]) -> str:
-    src = params.get("src_path")
-    dst = params.get("dst_path")
-    if not src or not dst:
-        return "복사 실패: src_path/dst_path가 필요합니다."
-
-    # 경로 정규화
-    src = _norm_path(src)
-    dst = _norm_path(dst)
-
-    if not os.path.exists(src):
-        return f"복사 실패: 원본이 없습니다: {src}"
-
-    # 목적지가 디렉터리인지 판단
-    dst_is_dir = _looks_like_dir(dst) or os.path.isdir(dst)
-    if dst_is_dir:
-        os.makedirs(dst, exist_ok=True)
-        dst_file = os.path.join(dst, os.path.basename(src))
-    else:
-        # 상위 디렉터리 생성
-        parent = os.path.dirname(dst)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        dst_file = dst
-
-    async def _copy():
-        await asyncio.to_thread(shutil.copy2, src, dst_file)
-
-    try:
-        await _copy()
-        return f"복사 완료: {src} → {dst_file}"
-    except Exception as e:
-        return f"복사 실패: {e}"
-
-async def _handle_delete_file(params: Dict[str, Any]) -> str:
-    target = params.get("target_path")
-    force = bool(params.get("force", False))
-    if not target:
-        return "삭제 실패: target_path가 필요합니다."
-
-    target = _norm_path(target)
-    if not os.path.exists(target):
-        return f"삭제 실패: 대상이 없습니다: {target}"
-
-    try:
-        if os.path.isdir(target):
-            if force:
-                await asyncio.to_thread(shutil.rmtree, target)
-                return f"디렉토리 삭제 완료: {target}"
-            else:
-                return "삭제 실패: 디렉토리입니다. force=True가 필요합니다."
-        else:
-            await asyncio.to_thread(os.remove, target)
-            return f"파일 삭제 완료: {target}"
-    except Exception as e:
-        return f"삭제 실패: {e}"
-
-async def _handle_rename_file(params: Dict[str, Any]) -> str:
-    old = params.get("old_path")
-    new = params.get("new_path")
-    if not old or not new:
-        return "이름 변경 실패: old_path/new_path가 필요합니다."
-
-    old = _norm_path(old)
-    new = _norm_path(new)
-
-    if not os.path.exists(old):
-        return f"이름 변경 실패: 대상이 없습니다: {old}"
-    if os.path.exists(new):
-        return f"이름 변경 실패: 새 경로가 이미 존재합니다: {new}"
-
-    # 상위 디렉터리 보장
-    parent = os.path.dirname(new)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-
-    try:
-        await asyncio.to_thread(os.rename, old, new)
-        return f"이름 변경 완료: {old} → {new}"
-    except Exception as e:
-        return f"이름 변경 실패: {e}"
-
-async def _handle_screenshot(params: Dict[str, Any]) -> str:
-    region = (params.get("region") or "full").lower()
-    save_path = params.get("save_path")
-
-    # 기본 저장 경로
-    if not save_path:
-        base = os.path.join(os.path.expanduser("~"), "Pictures", "Screenshots")
-        os.makedirs(base, exist_ok=True)
-        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        save_path = os.path.join(base, f"screenshot_{ts}.png")
-
-    save_path = _norm_path(save_path)
-    # 상위 디렉터리 보장
-    parent = os.path.dirname(save_path)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-
-    try:
-        # Pillow가 필요
-        try:
-            from PIL import ImageGrab
-        except Exception:
-            return "스크린샷 실패: Pillow가 필요합니다. `pip install pillow` 후 다시 시도해 주세요."
-
-        if region != "full":
-            # 간단화: active_window/custom 미지원 안내
-            region = "full"
-
-        img = await asyncio.to_thread(ImageGrab.grab)  # 전체 화면
-        await asyncio.to_thread(img.save, save_path)
-        return f"스크린샷 저장 완료: {save_path}"
-    except Exception as e:
-        return f"스크린샷 실패: {e}"
-
-async def _handle_block_remote_access(params: Dict[str, Any]) -> str:
-    """
-    Windows에서 RDP(원격 데스크톱) 허용/차단을 토글.
-    - 관리자 권한 필요.
-    - 레지스트리: fDenyTSConnections (1=차단, 0=허용)
-    - 방화벽 규칙: Remote Desktop 그룹 enable yes/no
-    """
-    enabled = params.get("enabled")
-    if enabled is None:
-        return "원격 접속 설정 실패: enabled=True/False가 필요합니다."
-
-    if platform.system().lower() != "windows":
-        return "원격 접속 설정 실패: 이 기능은 Windows에서만 지원됩니다."
-
-    # 관리자 권한 체크
-    if not _is_admin_windows():
-        return "원격 접속 설정 실패: 관리자 권한이 필요합니다. 관리자 권한으로 다시 실행해 주세요."
-
-    # 명령 조립
-    if enabled:  # 차단(접속 불가)
-        reg_cmd = r'reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 1 /f'
-        fw_cmd  = r'netsh advfirewall firewall set rule group="remote desktop" new enable=no'
-        action_text = "차단"
-    else:        # 허용(접속 가능)
-        reg_cmd = r'reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f'
-        fw_cmd  = r'netsh advfirewall firewall set rule group="remote desktop" new enable=yes'
-        action_text = "허용"
-
-    try:
-        # 동기 명령을 비동기로 래핑
-        proc1 = await asyncio.create_subprocess_shell(reg_cmd)
-        await proc1.communicate()
-        if proc1.returncode != 0:
-            return f"원격 접속 {action_text} 실패: 레지스트리 명령 오류"
-
-        proc2 = await asyncio.create_subprocess_shell(fw_cmd)
-        await proc2.communicate()
-        if proc2.returncode != 0:
-            return f"원격 접속 {action_text} 실패: 방화벽 명령 오류"
-
-        return f"원격 접속 {action_text} 완료"
-    except Exception as e:
-        return f"원격 접속 설정 실패: {e}"
-    
-# 기존 함수를 이 버전으로 교체
-async def _maybe_run_script(info: Dict[str, Any], params: Dict[str, Any]) -> Optional[str]:
-    """
-    외부 스크립트 실행.
-    - functions.script_command 안의 플레이스홀더({src_path}, ${dst_path}, {script_path} 등)를 params로 바인딩
-    - script_command가 없으면 script_path만 실행
-    - Windows shell 기준으로 안전하게 인자 쿼팅
-    """
-    script_cmd = (info.get("script_command") or "").strip()
-    script_path = (info.get("script_path") or "").strip()
-
-    if not script_cmd and not script_path:
-        return None
-
-    # 바인딩에 사용할 공통 파라미터 구성
-    bind_params: Dict[str, Any] = {}
-    bind_params.update(params or {})
-    if script_path:
-        bind_params.setdefault("script_path", _norm_path(script_path))
-
-    # 템플릿(커맨드 라인) 결정
-    template = script_cmd if script_cmd else '"{script_path}"'
-
-    # 템플릿 렌더링 (플레이스홀더 치환 + 안전 쿼팅)
-    try:
-        final_cmd = _render_command_template(template, bind_params)
-    except KeyError as ke:
-        missing = str(ke).strip("'")
-        return f"외부 스크립트 실행 실패: 필요한 파라미터 '{missing}'가 없습니다."
-    except Exception as e:
-        return f"외부 스크립트 준비 중 오류: {e}"
-
-    try:
-        # 실제 실행
-        proc = await asyncio.create_subprocess_shell(final_cmd)
-        await proc.communicate()
-        if proc.returncode == 0:
-            return "외부 스크립트 실행 완료"
-        return f"외부 스크립트 실행 실패(returncode={proc.returncode})"
-    except Exception as e:
-        return f"외부 스크립트 실행 중 오류: {e}"
-    
-# ─────────────────────────────────────────────────────────────────────────────
-# 헬퍼
-# ─────────────────────────────────────────────────────────────────────────────
-_ALLOWED_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-def _norm_path(p: str) -> str:
-    # 따옴표/슬래시 정리
-    s = str(p).strip().strip('"').strip("'").replace("/", "\\")
-    try:
-        return os.path.normpath(s)
-    except Exception:
-        return s
-
-def _looks_like_dir(path: str) -> bool:
-    # 끝이 백슬래시면 디렉터리로 간주
-    return bool(path) and (path.endswith("\\") or path.endswith("/"))
-
-def _is_admin_windows() -> bool:
-    try:
-        import ctypes
-        return bool(ctypes.windll.shell32.IsUserAnAdmin())
-    except Exception:
-        return False
-
-def _render_command_template(template: str, params: Dict[str, Any]) -> str:
-    """
-    템플릿 안의 {name} 또는 ${name} 플레이스홀더를 params로 치환.
-    - 모든 값은 Windows shell 안전을 위해 항상 쿼팅
-    - 알 수 없는 플레이스홀더가 있으면 KeyError
-    """
-    # 1) 치환용 사전 만들기 (문자열화 + 경로 정규화 + 안전 쿼팅)
-    prepared: Dict[str, str] = {}
-    for k, v in (params or {}).items():
-        if not isinstance(k, str) or not _ALLOWED_KEY.match(k):
-            # 키 이름은 안전한 식별자만 허용
-            continue
-        s = _stringify_and_normalize_param(k, v)
-        prepared[k] = _quote_arg_windows(s)
-
-    # 2) ${name} 형태 먼저 치환
-    def sub_dollar(match: re.Match) -> str:
-        key = match.group(1)
-        if key not in prepared:
-            raise KeyError(key)
-        return prepared[key]
-
-    cmd = re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", sub_dollar, template)
-
-    # 3) {name} 형태 치환 (중괄호 이스케이프 {{ }}는 그대로 둠)
-    def sub_brace(match: re.Match) -> str:
-        key = match.group(1)
-        if key not in prepared:
-            raise KeyError(key)
-        return prepared[key]
-
-    # 중괄호 플레이스홀더만 치환 ({{,}}는 유지)
-    cmd = re.sub(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", sub_brace, cmd)
-
-    return cmd
-
-def _stringify_and_normalize_param(key: str, value: Any) -> str:
-    """경로/불리언/기타 타입에 대한 문자열화와 경로 정규화."""
-    if value is None:
-        return ""
-    # 경로 힌트: *_path, path, src, dst 등은 경로 정규화
-    if key.lower().endswith("_path") or key.lower() in {"path", "src", "dst", "script_path"}:
-        return _norm_path(str(value))
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    return str(value)
-
-def _quote_arg_windows(arg: str) -> str:
-    """
-    Windows shell용 안전 쿼팅:
-    - 내부 " 를 \" 로 이스케이프
-    - 항상 전체를 "..." 로 감싸기
-    - 백슬래시/공백/특수문자 케이스를 단순화하여 안전성 확보
-    """
-    if arg is None:
-        arg = ""
-    # 내부 따옴표 이스케이프
-    arg = str(arg).replace('"', r'\"')
-    # 끝이 백슬래시로 끝나는 경우, Windows cmd의 인용규칙상 문제가 될 수 있으니 하나 더 붙여줌
-    if arg.endswith("\\"):
-        arg = arg + "\\"
-    return f'"{arg}"'
+# 레지스트리(디스패처) + 플러그인 구조

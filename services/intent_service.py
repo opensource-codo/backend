@@ -72,24 +72,7 @@ async def extract_intent(text: str) -> Dict[str, str]:
     content = getattr(response, "content", "").strip()
     return {"intent": content}
 
-async def get_function_info(intent: str) -> Dict[str, str]:
-    """intent에 해당하는 함수 정보를 반환합니다."""
-    # 먼저 RAG로 검색
-    embedding_db = get_embedding_db()
-    search_results = embedding_db.search_intent(intent, n_results=1)
-    
-    if search_results:
-        metadata = search_results[0]['metadata']
-        if metadata.get('type') == 'intent' and metadata.get('function_id'):
-            return {
-                "function_id": metadata.get('function_id', ''),
-                "shortcut": metadata.get('shortcut', '')
-            }
-    
-    # RAG 결과가 없으면 기존 DB 방식 사용
-    return db_get_function_info(intent)
-
 async def search_similar_intents(text: str, n_results: int = 5) -> List[Dict[str, Any]]:
-    """사용자 입력과 유사한 intent들을 검색합니다."""
+    """사용자 입력과 유사한 intsent들을 검색합니다."""
     embedding_db = get_embedding_db()
     return embedding_db.search_intent(text, n_results)

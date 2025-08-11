@@ -2,13 +2,19 @@ from typing import Dict
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import JSONResponse
 from services.guide_service import generate_guide_response
-from services.intent_service import extract_intent_with_rag, get_function_info, search_similar_intents
+from services.intent_service import extract_intent_with_rag, search_similar_intents
+from params_service import get_function_info
 from services.validator_service import validate
 from services.executor_service import execute_action
 from schemas.intent import UserRequest, MethodName, IntentResponse
 
 router = APIRouter()
 SIM_THRESHOLD = 0.75
+
+# TODO : 세션화 + 후속 엔드포인트(/continue, /confirm, /cancel) 방식 변경
+# 방식: 첫 호출에서 intent를 확정하고 interaction_id 발급.
+# 이후 POST /continue는 intent 재탐색 없이 부족 파라미터만 보강/검증.
+# POST /confirm은 위험 작업 승인만 처리.
 
 @router.post("/", response_model=IntentResponse)
 async def handle_user_input(request: UserRequest):
@@ -27,10 +33,9 @@ async def handle_user_input(request: UserRequest):
             parameters={},
             status="no_intent",
             message="의도를 식별하지 못했어요. 아래 후보를 참고해 주세요.",
-            # TODO : Response 수정 필요
-            # similar_intents=alts,  
-            # similarity=similarity,
-            # method_used=method_used,
+            similar_intents=alts,  
+            similarity=similarity,
+            method_used=method_used,
         )
 
     if similarity < SIM_THRESHOLD:
