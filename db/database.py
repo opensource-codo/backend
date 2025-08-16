@@ -44,6 +44,28 @@ def get_function_info(intent: str):
             "function_id": "",
             "shortcut": ""
         }
+
+def get_require_params(intent: str):
+    conn = get_db_connection()
+    cursor = conn.execute("""
+        SELECT f.function_id, f.require_params
+        FROM functions f
+        JOIN intents i ON f.function_id = i.function_id
+        WHERE i.intent = ?
+    """, (intent,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if row:
+        return {
+            "function_id": row["function_id"],
+            "require_params": row["require_params"]
+        }
+    else:
+        return {
+            "function_id": "",
+            "require_params": ""
+        }
     
   
     

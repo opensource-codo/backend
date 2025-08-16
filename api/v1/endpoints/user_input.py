@@ -3,7 +3,7 @@ from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import JSONResponse
 from services.guide_service import generate_guide_response
 from services.intent_service import extract_intent_with_rag, search_similar_intents
-from params_service import get_function_info
+from services.params_service import get_function_info
 from services.validator_service import validate
 from services.executor_service import execute_action
 from schemas.intent import UserRequest, MethodName, IntentResponse

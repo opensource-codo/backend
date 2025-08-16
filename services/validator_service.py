@@ -3,132 +3,226 @@ from typing import Dict, Any, List, Optional, Tuple
 import sqlite3
 import re
 import os
+import json
+
 
 class ValidatorService:
     def __init__(self, db_path: str = "assistant.db"):
         self.db_path = db_path
-    
+
+    # ───────────────────────────────────────────────
+    # DB 유틸
+    # ───────────────────────────────────────────────
     def get_db_connection(self):
         """SQLite 데이터베이스 연결을 반환합니다."""
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
-    
-    def get_function_params(self, function_key: str) -> Dict[str, Any]:
-        """DB에서 function의 파라미터 정보를 가져옵니다."""
+
+    def _table_exists(self, name: str) -> bool:
+        try:
+            conn = self.get_db_connection()
+            cur = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (name,),
+            )
+            ok = cur.fetchone() is not None
+            conn.close()
+            return ok
+        except Exception:
+            return False
+
+    # ───────────────────────────────────────────────
+    # 스키마 로딩 (DB 우선 → 하드코딩 폴백)
+    # ───────────────────────────────────────────────
+    def _get_schema_from_db(self, function_key: str) -> Dict[str, Any]:
+        """
+        intent_params에서 function_key의 파라미터 스키마를 읽는다.
+        없으면 {} 반환.
+        """
+        if not function_key or not self._table_exists("intent_params"):
+            return {}
+
         conn = self.get_db_connection()
         try:
-            # functions 테이블에서 function_key로 검색
-            cursor = conn.execute("""
-                SELECT id, function_key, function_name, script_path, shortcut, script_command
-                FROM functions 
+            cur = conn.execute(
+                """
+                SELECT name, type, required, default_json, choices_json, description
+                FROM intent_params
                 WHERE function_key = ?
-            """, (function_key,))
-            
-            function_row = cursor.fetchone()
-            if not function_row:
-                return {"required": [], "optional": [], "danger": False}
-            
-            # function_key에 따른 기본 파라미터 스키마
-            # 실제로는 별도 테이블(intent_params)을 만들어서 관리하는 것이 좋습니다
-            default_schemas = self._get_default_param_schemas()
-            return default_schemas.get(function_key, {"required": [], "optional": [], "danger": False})
-            
+                ORDER BY required DESC, name ASC
+                """,
+                (function_key,),
+            )
+            rows = cur.fetchall()
         finally:
             conn.close()
-    
-    def get_intent_params(self, intent: str) -> Dict[str, Any]:
-        """DB에서 intent의 파라미터 정보를 가져옵니다."""
+
+        if not rows:
+            return {}
+
+        required, optional = [], []
+        for r in rows:
+            spec: Dict[str, Any] = {
+                "name": r["name"],
+                "type": r["type"] or "str",
+                "description": r["description"] or "",
+            }
+            if r["default_json"]:
+                try:
+                    spec["default"] = json.loads(r["default_json"])
+                except Exception:
+                    spec["default"] = r["default_json"]
+            if r["choices_json"]:
+                try:
+                    spec["choices"] = json.loads(r["choices_json"])
+                except Exception:
+                    spec["choices"] = [
+                        s.strip() for s in str(r["choices_json"]).split(",") if s.strip()
+                    ]
+
+            if int(r["required"] or 0):
+                required.append(spec)
+            else:
+                optional.append(spec)
+
+        danger = self._get_function_danger(function_key)
+        return {"required": required, "optional": optional, "danger": bool(danger)}
+
+    def _get_function_danger(self, function_key: str) -> int:
+        """
+        functions.danger (0/1) 값을 읽는다. 컬럼이 없거나 NULL이면 0.
+        """
         conn = self.get_db_connection()
         try:
-            # intents 테이블에서 intent로 검색하고 function_id로 연결
-            cursor = conn.execute("""
-                SELECT i.intent, f.function_key
+            cur = conn.execute(
+                "SELECT COALESCE(danger, 0) AS danger FROM functions WHERE function_key = ?",
+                (function_key,),
+            )
+            row = cur.fetchone()
+            return int(row["danger"]) if row and row["danger"] is not None else 0
+        except Exception:
+            return 0
+        finally:
+            conn.close()
+
+    def get_function_params(self, function_key: str) -> Dict[str, Any]:
+        """
+        function_key 기준 스키마 조회. DB(intent_params) 우선, 없으면 하드코딩 폴백.
+        """
+        # 1) DB
+        schema = self._get_schema_from_db(function_key)
+        if schema:
+            return schema
+        # 2) fallback
+        default_schemas = self._get_default_param_schemas()
+        schema = default_schemas.get(
+            function_key, {"required": [], "optional": [], "danger": False}
+        )
+        return schema
+
+    def get_intent_params(self, intent: str) -> Dict[str, Any]:
+        """
+        intent 기준 스키마 조회.
+        intent -> functions.function_key 조인 후, get_function_params로 조회.
+        매핑이 없으면 not_configured=True로 표시.
+        """
+        conn = self.get_db_connection()
+        try:
+            cursor = conn.execute(
+                """
+                SELECT f.function_key
                 FROM intents i
                 LEFT JOIN functions f ON i.function_id = f.id
                 WHERE i.intent = ?
-            """, (intent,))
-            
-            intent_row = cursor.fetchone()
-            if not intent_row:
-                return {"required": [], "optional": [], "danger": False}
-            
-            function_key = intent_row['function_key']
-            if function_key:
-                return self.get_function_params(function_key)
-            else:
-                return {"required": [], "optional": [], "danger": False}
-                
+                """,
+                (intent,),
+            )
+            row = cursor.fetchone()
         finally:
             conn.close()
-    
+
+        if not row or not row["function_key"]:
+            # 의도는 있지만 기능 매핑이 안 된 구성 이슈
+            return {"required": [], "optional": [], "danger": False, "not_configured": True}
+
+        return self.get_function_params(row["function_key"])
+
     def _get_default_param_schemas(self) -> Dict[str, Dict[str, Any]]:
-        """기본 파라미터 스키마를 반환합니다."""
+        """하드코딩 기본 스키마(폴백용)."""
         return {
             "copy_file": {
                 "required": [
                     {"name": "src_path", "type": "path", "description": "복사할 파일 경로"},
-                    {"name": "dst_path", "type": "path", "description": "복사할 대상 경로"}
+                    {"name": "dst_path", "type": "path", "description": "복사할 대상 경로"},
                 ],
                 "optional": [],
-                "danger": False
+                "danger": False,
             },
             "delete_file": {
                 "required": [
                     {"name": "target_path", "type": "path", "description": "삭제할 파일 경로"}
                 ],
                 "optional": [
-                    {"name": "force", "type": "bool", "default": False, "description": "강제 삭제 여부"}
+                    {
+                        "name": "force",
+                        "type": "bool",
+                        "default": False,
+                        "description": "강제 삭제 여부",
+                    }
                 ],
-                "danger": True
+                "danger": True,
             },
             "rename_file": {
                 "required": [
                     {"name": "old_path", "type": "path", "description": "기존 파일 경로"},
-                    {"name": "new_path", "type": "path", "description": "새 파일 경로"}
+                    {"name": "new_path", "type": "path", "description": "새 파일 경로"},
                 ],
                 "optional": [],
-                "danger": False
+                "danger": False,
             },
             "screenshot": {
                 "required": [],
                 "optional": [
-                    {"name": "region", "type": "enum", "choices": ["full", "active_window", "custom"], "default": "full", "description": "캡처 영역"},
-                    {"name": "save_path", "type": "path", "description": "저장 경로"}
+                    {
+                        "name": "region",
+                        "type": "enum",
+                        "choices": ["full", "active_window", "custom"],
+                        "default": "full",
+                        "description": "캡처 영역",
+                    },
+                    {"name": "save_path", "type": "path", "description": "저장 경로"},
                 ],
-                "danger": False
+                "danger": False,
             },
             "block_remote_access": {
                 "required": [
                     {"name": "enabled", "type": "bool", "description": "원격 접속 차단 여부"}
                 ],
                 "optional": [],
-                "danger": True
-            }
+                "danger": True,
+            },
         }
-    
-    def validate(self, intent: str, parameters: Dict[str, Any], method: str = "GUIDE", text: str = "") -> Dict[str, Any]:
+
+    # ───────────────────────────────────────────────
+    # 검증 메인
+    # ───────────────────────────────────────────────
+    def validate(
+        self, intent: str, parameters: Dict[str, Any], method: str = "GUIDE", text: str = ""
+    ) -> Dict[str, Any]:
         """
         intent와 파라미터를 검증합니다.
-        
-        Args:
-            intent: 검증할 intent
-            parameters: 검증할 파라미터
-            method: 실행 방법 (GUIDE, EXECUTION)
-            text: 원본 텍스트 (파라미터 추출용)
-        
-        Returns:
-            {
-                "valid": bool,
-                "missing_params": List[str],
-                "normalized_params": Dict[str, Any],
-                "errors": List[str],
-                "requires_confirmation": bool,
-                "message": str
-            }
+
+        Returns(dict):
+            valid: bool
+            missing_params: List[str]
+            normalized_params: Dict[str, Any]
+            errors: List[str]
+            requires_confirmation: bool
+            message: str
         """
         method = (method or "GUIDE").upper()
-        
+
         # GUIDE는 파라미터 검증 불필요
         if method == "GUIDE":
             return {
@@ -137,35 +231,30 @@ class ValidatorService:
                 "normalized_params": {},
                 "errors": [],
                 "requires_confirmation": False,
-                "message": "가이드 모드: 파라미터 검증이 필요하지 않습니다."
+                "message": "가이드 모드: 파라미터 검증이 필요하지 않습니다.",
             }
-        
-        # DB에서 파라미터 스키마 가져오기
+
+        # 스키마 로딩
         schema = self.get_intent_params(intent)
-        
-        # 텍스트에서 파라미터 추출 시도
+        if schema.get("not_configured"):
+            return {
+                "valid": False,
+                "missing_params": [],
+                "normalized_params": {},
+                "errors": ["해당 intent가 function에 매핑되지 않았습니다."],
+                "requires_confirmation": False,
+                "message": "구성되지 않은 의도입니다. 관리자에게 기능 매핑을 요청하세요.",
+            }
+
+        # 텍스트에서 파라미터 추정
         guessed_params = self._extract_params_from_text(intent, text)
-        
-        # 추출된 파라미터와 전달된 파라미터 병합
+
+        # 전달 파라미터와 병합 (전달값이 우선)
         merged_params = {**guessed_params, **(parameters or {})}
-        
-        # 스키마에 따른 검증 및 정규화
+
+        # 스키마 검증/정규화
         normalized, missing, errors = self._apply_schema(merged_params, schema)
-        
-        # # SIMULATION: 필수 파라미터 누락 허용
-        # if method == "SIMULATION":
-        #     valid = True
-        #     msg = "시뮬레이션 모드: 일부 파라미터가 누락되었지만 실행 가능합니다." if missing else "시뮬레이션 모드: 모든 파라미터가 준비되었습니다."
-        #     return {
-        #         "valid": valid,
-        #         "missing_params": missing,
-        #         "normalized_params": normalized,
-        #         "errors": errors,
-        #         "requires_confirmation": bool(schema.get("danger", False)),
-        #         "message": msg
-        #     }
-        
-        # EXECUTION: 모든 필수 파라미터가 필요
+
         if method == "EXECUTION":
             if missing or errors:
                 parts = []
@@ -179,7 +268,7 @@ class ValidatorService:
                     "normalized_params": normalized,
                     "errors": errors,
                     "requires_confirmation": False,
-                    "message": "실행 모드: " + "; ".join(parts)
+                    "message": "실행 모드: " + "; ".join(parts),
                 }
 
             return {
@@ -188,9 +277,9 @@ class ValidatorService:
                 "normalized_params": normalized,
                 "errors": [],
                 "requires_confirmation": bool(schema.get("danger", False)),
-                "message": "실행 모드: 모든 파라미터가 준비되었습니다."
+                "message": "실행 모드: 모든 파라미터가 준비되었습니다.",
             }
-        
+
         # 알 수 없는 method
         return {
             "valid": False,
@@ -198,175 +287,186 @@ class ValidatorService:
             "normalized_params": {},
             "errors": [f"지원하지 않는 method: {method}"],
             "requires_confirmation": False,
-            "message": "잘못된 실행 방법입니다."
+            "message": "잘못된 실행 방법입니다.",
         }
-    
+
+    # ───────────────────────────────────────────────
+    # 텍스트 → 파라미터 추정
+    # ───────────────────────────────────────────────
     def _extract_params_from_text(self, intent: str, text: str) -> Dict[str, Any]:
-        """텍스트에서 파라미터를 추출합니다."""
+        """텍스트에서 파라미터를 추출(추정)합니다. (검증/정규화는 _apply_schema에서)"""
         if not text:
             return {}
-        
-        # function_key 찾기
+
+        # intent → function_key
         function_key = self._get_function_key_from_intent(intent)
         if not function_key:
             return {}
-        
-        extracted = {}
-        
+
+        # 간단 규칙 기반 추정
+        extracted: Dict[str, Any] = {}
+
+        # Windows 경로 캡처(따옴표 포함 케이스 대비)
+        # 예: "C:\a b\c.txt" D:\d
+        path_pattern = r'(?:"([A-Za-z]:\\[^:*?"<>|]+)"|([A-Za-z]:\\[^:*?"<>|]+))'
+        paths = []
+        for m in re.finditer(path_pattern, text):
+            p = m.group(1) or m.group(2)
+            if p:
+                paths.append(p)
+
         if function_key == "copy_file":
-            # 파일 경로 2개 찾기
-            paths = re.findall(r'[A-Za-z]:\\[^:*?"<>|]+', text)
             if len(paths) >= 2:
                 extracted["src_path"] = paths[0]
                 extracted["dst_path"] = paths[1]
-        
+
         elif function_key == "delete_file":
-            # 파일 경로 1개 찾기
-            paths = re.findall(r'[A-Za-z]:\\[^:*?"<>|]+', text)
             if paths:
                 extracted["target_path"] = paths[0]
-        
+
         elif function_key == "rename_file":
-            # 파일 경로 2개 찾기
-            paths = re.findall(r'[A-Za-z]:\\[^:*?"<>|]+', text)
             if len(paths) >= 2:
                 extracted["old_path"] = paths[0]
                 extracted["new_path"] = paths[1]
-        
+
         elif function_key == "block_remote_access":
-            # 차단/해제 키워드 찾기
             text_lower = text.lower()
-            if any(keyword in text_lower for keyword in ["차단", "block", "켜", "enable", "on"]):
+            if any(k in text_lower for k in ["차단", "block", "켜", "enable", "on"]):
                 extracted["enabled"] = True
-            elif any(keyword in text_lower for keyword in ["해제", "off", "disable", "끄"]):
+            elif any(k in text_lower for k in ["해제", "off", "disable", "끄"]):
                 extracted["enabled"] = False
-        
+
         return extracted
-    
+
     def _get_function_key_from_intent(self, intent: str) -> Optional[str]:
         """intent에서 function_key를 가져옵니다."""
         conn = self.get_db_connection()
         try:
-            cursor = conn.execute("""
+            cursor = conn.execute(
+                """
                 SELECT f.function_key
                 FROM intents i
                 LEFT JOIN functions f ON i.function_id = f.id
                 WHERE i.intent = ?
-            """, (intent,))
-            
+                """,
+                (intent,),
+            )
             row = cursor.fetchone()
-            return row['function_key'] if row else None
-            
+            return row["function_key"] if row else None
         finally:
             conn.close()
-    
-    def _apply_schema(self, parameters: Dict[str, Any], schema: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str], List[str]]:
+
+    # ───────────────────────────────────────────────
+    # 스키마 적용(정규화/검증)
+    # ───────────────────────────────────────────────
+    def _apply_schema(
+        self, parameters: Dict[str, Any], schema: Dict[str, Any]
+    ) -> Tuple[Dict[str, Any], List[str], List[str]]:
         """스키마에 따라 파라미터를 정규화하고 검증합니다."""
-        params_out = {}
-        missing = []
-        errors = []
-        
+        params_out: Dict[str, Any] = {}
+        missing: List[str] = []
+        errors: List[str] = []
+
         # 필수 파라미터 검증
         for spec in schema.get("required", []):
             name = spec["name"]
-            param_type = spec.get("type", "str")
+            ptype = spec.get("type", "str")
             value = parameters.get(name)
-            
+
             if value is None:
                 missing.append(name)
                 continue
-            
-            # 타입 변환 및 검증
-            success, converted = self._validate_and_convert(name, value, param_type, spec)
-            if not success:
+
+            ok, converted = self._validate_and_convert(name, value, ptype, spec)
+            if not ok:
                 errors.append(f"{name}: 유효하지 않은 값")
             else:
                 params_out[name] = converted
-        
+
         # 선택적 파라미터 처리
         for spec in schema.get("optional", []):
             name = spec["name"]
-            param_type = spec.get("type", "str")
-            
+            ptype = spec.get("type", "str")
             if name in parameters and parameters[name] is not None:
-                success, converted = self._validate_and_convert(name, parameters[name], param_type, spec)
-                if not success:
+                ok, converted = self._validate_and_convert(name, parameters[name], ptype, spec)
+                if not ok:
                     errors.append(f"{name}: 유효하지 않은 값")
                 else:
                     params_out[name] = converted
             else:
-                # 기본값 설정
                 if "default" in spec:
                     params_out[name] = spec["default"]
-            # cross-field checks
-            
-        fk = None
-        # 가능하면 intent→function_key를 가져와서 판단
-        # fk = self._get_function_key_from_intent(intent)  # intent 인자를 넘겨받도록 시그니처 늘릴 수도
-        # 여기선 parameters에 힌트를 둔다고 가정
+
+        # 교차 필드 체크
         if "src_path" in params_out and "dst_path" in params_out:
-            if params_out["src_path"].lower() == params_out["dst_path"].lower():
+            if str(params_out["src_path"]).lower() == str(params_out["dst_path"]).lower():
                 errors.append("src_path와 dst_path가 동일합니다.")
         if "old_path" in params_out and "new_path" in params_out:
-            if params_out["old_path"].lower() == params_out["new_path"].lower():
+            if str(params_out["old_path"]).lower() == str(params_out["new_path"]).lower():
                 errors.append("old_path와 new_path가 동일합니다.")
+
         return params_out, missing, errors
-    
-    def _validate_and_convert(self, name: str, value: Any, param_type: str, spec: Dict[str, Any]) -> Tuple[bool, Any]:
+
+    # ───────────────────────────────────────────────
+    # 타입별 변환기
+    # ───────────────────────────────────────────────
+    def _validate_and_convert(
+        self, name: str, value: Any, param_type: str, spec: Dict[str, Any]
+    ) -> Tuple[bool, Any]:
         """파라미터 값을 검증하고 변환합니다."""
         if param_type == "bool":
             converted = self._coerce_bool(value)
             return (converted is not None, converted)
-        
+
         elif param_type == "path":
             converted = self._coerce_path(value)
             return (converted is not None, converted)
-        
+
         elif param_type == "enum":
             choices = spec.get("choices", [])
             converted = self._coerce_enum(value, choices)
             return (converted is not None, converted)
-        
+
         # 기본 문자열
         if value is None:
             return (False, None)
-        
         return (True, str(value))
-    
+
     def _coerce_bool(self, value: Any) -> Optional[bool]:
         """값을 boolean으로 변환합니다."""
         if isinstance(value, bool):
             return value
-        
+
         if isinstance(value, str):
             s = value.strip().lower()
             if s in {"true", "1", "yes", "y", "켜", "on"}:
                 return True
             if s in {"false", "0", "no", "n", "끄", "off"}:
                 return False
-        
+
         if isinstance(value, (int, float)):
             return bool(value)
-        
+
         return None
-    
+
     def _coerce_path(self, value: Any) -> Optional[str]:
+        """값을 Windows 경로로 정규화/검증."""
         if not isinstance(value, str):
             return None
-        s = value.strip().strip('"').strip("'")      # 따옴표 제거
-        s = s.replace('/', '\\')                     # 슬래시 정규화
+        s = value.strip().strip('"').strip("'")  # 따옴표 제거
+        s = s.replace("/", "\\")  # 슬래시 정규화
         try:
             norm = os.path.normpath(s)
         except Exception:
             return None
         # UNC(\\server\share) 또는 드라이브 경로 허용
-        if re.match(r'^(\\\\[^\\/:*?"<>|]+\\[^:*?"<>|]+|[A-Za-z]:\\)', norm):
-            # 금지문자 포함 여부 최종 체크
-            if re.search(r'[:*?"<>|]', norm.split(':', 1)[-1]):
+        if re.match(r"^(\\\\[^\\/:*?\"<>|]+\\[^:*?\"<>|]+|[A-Za-z]:\\)", norm):
+            # 금지문자 포함 여부 최종 체크 (드라이브 문자 뒤만 검사)
+            if re.search(r'[:*?"<>|]', norm.split(":", 1)[-1]):
                 return None
             return norm
         return None
-    
+
     def _coerce_enum(self, value: Any, choices: List[str]) -> Optional[str]:
         """값을 enum으로 변환합니다."""
         if isinstance(value, str):
@@ -374,11 +474,20 @@ class ValidatorService:
             for choice in choices:
                 if s == choice.lower():
                     return choice
-        
         return None
+
 
 # 전역 인스턴스 생성
 validator_service = ValidatorService()
+
+# 공개 래퍼: 텍스트에서 파라미터만 대략 추정 (검증/정규화는 validate에서 처리)
+def validate_text_parameters(intent: str, text: str) -> Dict[str, Any]:
+    if not intent or not text:
+        return {}
+    try:
+        return validator_service._extract_params_from_text(intent, text)
+    except Exception:
+        return {}
 
 # 기존 코드와의 호환성을 위한 함수
 def validate(intent: str, parameters: Dict[str, Any], method: str = "GUIDE", text: str = "") -> Dict[str, Any]:
@@ -386,4 +495,4 @@ def validate(intent: str, parameters: Dict[str, Any], method: str = "GUIDE", tex
     기존 코드와의 호환성을 위한 함수입니다.
     validator_service.validate()를 호출합니다.
     """
-    return validator_service.validate(intent, parameters, method, text) 
+    return validator_service.validate(intent, parameters, method, text)

@@ -4,10 +4,10 @@ from pydantic import BaseModel, Field
 
 from services.guide_service import generate_guide_response
 from services.intent_service import extract_intent_with_rag, db_get_function_info, search_similar_intents
-from services.validator_service import validate, validator_service
-from services.executor_service import execute_action
+from services.validator_service import validate, validator_service, validate_text_parameters
+from services.executor_service import plan_action
 from services import interaction_store  # 새로 추가
-from services.params_service import get_text_parameters
+from services.param_extractor import extract_params_llm
 
 from schemas.intent import UserRequest, MethodName
 from schemas.intent import IntentResponse  # 확장 IntentResponse (앞서 정의했던 버전)
@@ -82,7 +82,7 @@ async def handle_user_input(request: UserRequest):
             function_key = ""
 
     # 3) GUIDE
-    if request.method == "GUIDE":
+    if request.method == MethodName.GUIDE:
         guide = await generate_guide_response(request.text, intent, shortcut)
         return IntentResponse(
             intent=intent,
@@ -97,10 +97,53 @@ async def handle_user_input(request: UserRequest):
 
     # 4) EXECUTION/SIMULATION (초판 검증)
     #    - 첫 호출에서 모든 정보를 받았을 수도 있음
-    parameters = get_text_parameters(intent, request.text)
-    v = validate(intent, parameters=request.parameters or {}, method=str(request.method), text=request.text)
-    schema = validator_service.get_intent_params(intent)  # 파라미터 스키마(가이드용)
+    # 스키마 : 각 기능 실행에 필요한 파라미터의 설계도
+    # ex) copy_file
+    # {
+    # "required":[
+    #     {"name":"src_path","type":"path"},
+    #     {"name":"dst_path","type":"path"}
+    # ],
+    # "optional":[],
+    # "danger": false
+    # }
+    # parameters = validate_text_parameters(intent, request.text)
+    # v = validate(intent, parameters or {}, method=str(request.method), text=request.text)
+    # schema = validator_service.get_function_params(intent)  # 파라미터 스키마(가이드용)
+    schema = validator_service.get_intent_params(intent)
 
+    # function 매핑 누락
+    if schema.get("not_configured"):
+        return IntentResponse(
+            intent=intent,
+            method=request.method,
+            parameters={},
+            status="no_intent",
+            message="구성되지 않은 의도입니다. 관리자에게 기능 매핑을 요청하세요.",
+            similarity=similarity,
+            method_used=method_used   
+        )
+    
+    v = None
+    if request.method == MethodName.EXECUTION:
+        # 텍스트 추정값 + 클라이언트 파라미터 병합(선택),
+        # validate 내부에서도 텍스트 재추정/머지하므로 안전함
+        pre_params = extract_params_llm(intent, request.text, schema) or {}
+        rb_params = validate_text_parameters(intent, request.text) or {}
+        for k, v_ in rb_params.items():
+            pre_params.setdefault(k, v_)
+        v = validate(intent, pre_params, method=MethodName.EXECUTION, text=request.text) 
+    else:
+        return IntentResponse(
+            intent=intent,
+            method=request.method,
+            parameters={},
+            status="unknown_method",
+            message="지원되지 않는 method입니다.",
+            similarity=similarity,
+            method_used=method_used,
+        )
+    
     # 부족 → 세션 생성 + info_required
     if not v["valid"]:
         iid = interaction_store.create(
@@ -155,18 +198,31 @@ async def handle_user_input(request: UserRequest):
 
     # 실행
     params = v.get("normalized_params", {})
-    exec_result = await execute_action(function_key or intent, params)
+    plan = await plan_action(function_key or intent, params)
+    
+    if not plan.get("ok"):
+        return IntentResponse(
+            intent=intent,
+            method=request.method,
+            parameters=params,
+            status="error",
+            message=plan.get("message", "실행 계획 생성 실패"),
+            shortcut=shortcut,
+            similarity=similarity,
+            method_used=method_used
+        )
+        
     return IntentResponse(
         intent=intent,
         method=request.method,
         parameters=params,
-        status="executed",
-        message=exec_result.get("message"),
-        shortcut=exec_result.get("shortcut", shortcut),
+        status="ready_to_execute",
+        message=plan.get("message"),
+        shortcut=shortcut,
         similarity=similarity,
         method_used=method_used,
+        exec=plan.get("exec") 
     )
-
 
 # -------------------- 후속 요청: 파라미터 보강 --------------------
 @router.post("/continue", response_model=IntentResponse)
@@ -183,7 +239,7 @@ async def continue_intent(req: ContinueRequest):
     merged.update(req.parameters or {})
 
     # 재검증 (RAG 없음!)
-    v = validate(intent, parameters=merged, method="EXECUTION", text=req.text or "")
+    v = validate(intent, parameters=merged, method=MethodName.EXECUTION, text=req.text or "")
     schema = st.get("schema") or validator_service.get_intent_params(intent)
 
     if not v["valid"]:
@@ -229,19 +285,33 @@ async def continue_intent(req: ContinueRequest):
 
     # 실행
     params = v.get("normalized_params", {})
-    exec_result = await execute_action(function_key or intent, params)
-    # 완료되었으니 세션 정리
+    plan = await plan_action(function_key or intent, params)
+    
     interaction_store.delete(req.interaction_id)
+    
+    if not plan.get("ok"):
+        return IntentResponse(
+            intent=intent,
+            method=req.method,
+            parameters=params,
+            status="error",
+            message=plan.get("message", "실행 계획 생성 실패"),
+            shortcut=shortcut,
+            similarity=st["similarity"],
+            method_used=st["method_used"],
+        )
+        
     return IntentResponse(
         intent=intent,
         method=req.method,
         parameters=params,
-        status="executed",
-        message=exec_result.get("message"),
-        shortcut=exec_result.get("shortcut", shortcut),
+        status="ready_to_execute",
+        message="실행 계획 생성",
+        shortcut=shortcut,
         interaction_id=req.interaction_id,
         similarity=st["similarity"],
         method_used=st["method_used"],
+        exec=plan.get("exec") 
     )
 
 
@@ -275,16 +345,30 @@ async def confirm_intent(req: ConfirmRequest):
         )
 
     # 승인 → 실행
-    exec_result = await execute_action(function_key or intent, params)
+    plan = await plan_action(function_key or intent, params)
     interaction_store.delete(req.interaction_id)
+    
+    if not plan.get("ok"):
+        return IntentResponse(
+            intent=intent,
+            method=req.method,
+            parameters=params,
+            status="error",
+            message=plan.get("message", "실행 계획 생성 실패"),
+            shortcut=shortcut,
+            similarity=st["similarity"],
+            method_used=st["method_used"],
+        )
+        
     return IntentResponse(
         intent=intent,
         method=MethodName.EXECUTION,
         parameters=params,
-        status="executed",
-        message=exec_result.get("message"),
-        shortcut=exec_result.get("shortcut", shortcut),
+        status="ready_to_execute",
+        message="실행 계획 생성",
+        shortcut=shortcut,
         interaction_id=req.interaction_id,
         similarity=st["similarity"],
         method_used=st["method_used"],
+        exec=plan.get("exec") 
     )

@@ -65,7 +65,7 @@ def test_validator():
     
     # 6. 파라미터 스키마 조회 테스트
     print("\n6. 파라미터 스키마 조회 테스트:")
-    schema = validator.get_intent_params("파일 복사")
+    schema = validator.get_function_params("파일 복사")
     print(f"   '파일 복사'의 스키마: {schema}")
 
 if __name__ == "__main__":
