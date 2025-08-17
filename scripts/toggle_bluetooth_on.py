@@ -30,7 +30,6 @@ except Exception:
 def toggle_bluetooth(on=True):
     try:
         current_flag = bluetooth_toggle.get_toggle_state()
-        
         if current_flag == on:
             print("이미 원하는 상태입니다. 아무 것도 실행하지 않음.")
             return

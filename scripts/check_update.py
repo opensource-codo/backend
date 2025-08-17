@@ -1,77 +1,45 @@
-import os
-import sys
-import ctypes
+from pywinauto import Application
 import subprocess
 import time
-import psutil
 
-# 관리자 권한 체크
-def is_admin():
+# explorer.exe를 통해 ms-settings: URI로 설정 앱 실행
+subprocess.Popen(['explorer.exe', 'ms-settings:'])
+time.sleep(2)  # 설정 앱이 뜰 시간을 줍니다.
+
+# 설정 앱 창에 연결
+app = Application(backend="uia").connect(title_re="설정|Settings")
+settings_dlg = app.window(title_re="설정|Settings")
+settings_dlg.wait('visible')
+
+# 3. 왼쪽 메뉴에서 'Windows 업데이트' 클릭 (한글/영어 지원)
+try:
+    update_menu = settings_dlg.child_window(title='Windows 업데이트', control_type="ListItem")
+    update_menu.click_input()
+except:
+    update_menu = settings_dlg.child_window(title='Windows Update', control_type="ListItem")
+    update_menu.click_input()
+
+time.sleep(2)  # 페이지 전환 대기
+
+# 4. '업데이트 확인' 버튼 클릭
+try:
+    check_button = settings_dlg.child_window(title='업데이트 확인', control_type="Button")
+    check_button.click_input()
+except:
+    check_button = settings_dlg.child_window(title='Check for updates', control_type="Button")
+    check_button.click_input()
+
+print("업데이트 확인 버튼 클릭!")
+
+# 5. 만약 '다운로드' 또는 '지금 설치' 버튼이 있으면 자동 클릭 (옵션)
+for btn_title in ['다운로드', '지금 설치', 'Download', 'Install now']:
     try:
-        return ctypes.windll.shell32.IsUserAnAdmin()
-    except:
-        return False
+        install_button = settings_dlg.child_window(title=btn_title, control_type="Button")
+        install_button.click_input()
+        print(f"'{btn_title}' 버튼 클릭!")
+        break
+    except Exception:
+        continue
 
-# 실행 중인 크롬 종료
-def kill_chrome():
-    print("[*] 실행 중인 크롬 종료 중...")
-    for proc in psutil.process_iter(['name']):
-        if proc.info['name'] and 'chrome.exe' in proc.info['name'].lower():
-            try:
-                proc.terminate()
-            except Exception as e:
-                print(f"[-] 종료 실패: {e}")
-    time.sleep(2)  # 종료 대기
-
-# 크롬 실행
-def run_chrome():
-    chrome_path = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
-    if not os.path.exists(chrome_path):
-        chrome_path = r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
-    if os.path.exists(chrome_path):
-        subprocess.Popen([chrome_path])
-        print("[+] 크롬이 재실행되었습니다.")
-    else:
-        print("[-] 크롬 실행 파일을 찾을 수 없습니다.")
-
-# 크롬 업데이트 시도
-def update_chrome():
-    print("[*] 크롬 업데이트를 시작합니다...")
-
-    # 1순위: winget 사용
-    try:
-        subprocess.run("winget upgrade --id=Google.Chrome -e --silent", check=True, shell=True)
-        print("[+] winget으로 크롬 업데이트 완료")
-        return True
-    except subprocess.CalledProcessError:
-        print("[-] winget 업데이트 실패 또는 winget 미설치")
-
-    # 2순위: GoogleUpdate.exe 직접 호출
-    google_update_path = r"C:\Program Files (x86)\Google\Update\GoogleUpdate.exe"
-    if os.path.exists(google_update_path):
-        try:
-            subprocess.run(f'"{google_update_path}" /ua /install', check=True, shell=True)
-            print("[+] GoogleUpdate.exe로 업데이트 시도 완료")
-            return True
-        except subprocess.CalledProcessError:
-            print("[-] GoogleUpdate.exe 실행 실패")
-    else:
-        print("[-] GoogleUpdate.exe 경로를 찾을 수 없습니다.")
-
-    return False
-
-if __name__ == "__main__":
-    if not is_admin():
-        print("[*] 관리자 권한이 필요합니다. UAC 창을 표시합니다...")
-        ctypes.windll.shell32.ShellExecuteW(
-            None, "runas", sys.executable, " ".join(sys.argv), None, 1
-        )
-        sys.exit()
-
-    updated = update_chrome()
-
-    if updated:
-        kill_chrome()
-        run_chrome()
-
-    print("[*] 작업이 완료되었습니다.")
+# 종료
+settings_dlg.close()
