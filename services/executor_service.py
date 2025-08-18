@@ -42,17 +42,57 @@ class ActionPlanner:
     async def plan(self, params: Dict[str, Any]) -> PlanResult:
         raise NotImplementedError
 
-
 # ─────────────────────────────────────────────────────────────
 # 안전 설정
 # ─────────────────────────────────────────────────────────────
 
-SAFE_SHELLS = {"powershell", "cmd", "sh"}   # 허용 셸만
+SAFE_SHELLS = {"powershell", "pwsh", "cmd", "sh", "bash"}
 DEFAULT_SHELL = "powershell"
 DEFAULT_CWD = None  # 필요 시 고정 디렉터리 경로로 지정 가능 (예: "C:\\Program Files\\MyApp\\scripts")
+DEFAULT_TIMEOUT_MS = 15000
 
 FORBIDDEN_TOKENS = {"&&", "||", "|", ";", "`", "$(", "<(", ">", ">>"}  # 아주 기초적인 차단 토큰
 
+def _new_exec_base(name: str, preview: Optional[str] = None,
+                   requires_confirmation: Optional[bool] = None,
+                   timeout_ms: Optional[int] = None) -> Dict[str, Any]:
+    return {
+        "version": 1,
+        "id": str(uuid.uuid4()),
+        "name": name,
+        **({"preview": preview} if preview else {}),
+        **({"requiresConfirmation": bool(requires_confirmation)} if requires_confirmation is not None else {}),
+        **({"timeoutMs": int(timeout_ms)} if timeout_ms else {"timeoutMs": DEFAULT_TIMEOUT_MS}),
+    }
+    
+# ── 키 이름 정규화(핫키용) ─────────────────────────────────────
+_KEY_NORMALIZE_MAP = {
+    "control": "ctrl",
+    "ctrl": "ctrl",
+    "shift": "shift",
+    "alt": "alt",
+    "option": "alt",
+    "cmd": "meta",
+    "command": "meta",
+    "meta": "meta",
+    "win": "meta",
+    "super": "meta",
+    "enter": "enter",
+    "return": "enter",
+    "esc": "escape",
+    "escape": "escape",
+    "del": "delete",
+    "delete": "delete",
+    "bksp": "backspace",
+    "backspace": "backspace",
+    "space": "space",
+    "tab": "tab",
+    # 문자키/기타는 소문자 그대로 사용 가정
+}
+
+def _normalize_key(k: str) -> str:
+    s = (k or "").strip().lower()
+    return _KEY_NORMALIZE_MAP.get(s, s)
 
 def _sanitize_params(params: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -103,13 +143,11 @@ class GenericScriptPlanner(ActionPlanner):
         self.cwd = cwd
 
     async def plan(self, params: Dict[str, Any]) -> PlanResult:
-        if self.shell not in SAFE_SHELLS:
+        if self.shell not in SAFE_SHELLS and self.shell not in {"python", "node"}:
             return PlanResult(ok=False, message=f"허용되지 않은 셸: {self.shell}")
 
         # 사용자 파라미터 얕은 정규화
         safe_params = _sanitize_params(params)
-
-        # SCRIPT_PATH는 서버가 제공(고정/검증된 경로여야 함)
         context = {"SCRIPT_PATH": self.script_path, **safe_params}
 
         if self.script_command:
@@ -143,15 +181,30 @@ class GenericScriptPlanner(ActionPlanner):
 @register("paste")
 class PastePlanner(ActionPlanner):
     async def plan(self, params: Dict[str, Any]) -> PlanResult:
+        # 키 콤보 표준화
+        raw_combo = params.get("combo") or ["control", "v"]
+        combo = [_normalize_key(k) for k in raw_combo]
+
+        exec_plan = {
+            **_new_exec_base(
+                name="paste",
+                preview="Send CTRL+V",
+                requires_confirmation=False,
+                timeout_ms=3000
+            ),
+            "kind": "hotkey",
+            "payload": {
+                "combo": combo,                 # 예: ["ctrl","v"]
+                "repeat": 1,
+                "delayMsBetweenKeys": 20
+            }
+        }
+
         return PlanResult(
             ok=True,
             message="붙여넣기 단축키 실행 계획",
             shortcut="Ctrl+V",
-            exec={
-                "type": "hotkey",
-                "name": "paste",          # Electron 허용 리스트 키
-                "args": {"combo": ["control", "v"]}
-            }
+            exec=exec_plan
         )
 
 

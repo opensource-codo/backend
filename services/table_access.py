@@ -18,7 +18,7 @@ import sqlite3
 from typing import Optional, Dict, Any, List, Tuple
 from contextlib import contextmanager
 
-DEFAULT_DB_PATH = os.getenv("APP_DB_PATH", "app.db")
+DEFAULT_DB_PATH = os.getenv("APP_DB_PATH", "assistant.db")
 
 
 @contextmanager
@@ -62,7 +62,7 @@ def get_function_by_key(function_key: str, db_path: str = DEFAULT_DB_PATH) -> Op
     with _connect(db_path) as conn:
         cur = conn.execute(
             """
-            SELECT function_key, script_path, script_command, shell, shortcut
+            SELECT function_key, script_path, script_command, shortcut
             FROM functions
             WHERE function_key = ?
             LIMIT 1

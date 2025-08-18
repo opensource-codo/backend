@@ -1,11 +1,10 @@
 import sqlite3
 from sqlite3 import Connection
 
-DB_PATH = "intents.db"
-
+DB_PATH = "assistant.db"
 
 def get_db_connection() -> Connection:
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -26,9 +25,9 @@ def get_shortcut(function_id: str):
 def get_function_info(intent: str):
     conn = get_db_connection()
     cursor = conn.execute("""
-        SELECT f.function_id, f.shortcut 
+        SELECT f.function_key, f.shortcut 
         FROM functions f
-        JOIN intents i ON f.function_id = i.function_id
+        JOIN intents i ON f.function_key = i.function_id
         WHERE i.intent = ?
     """, (intent,))
     row = cursor.fetchone()
@@ -36,12 +35,12 @@ def get_function_info(intent: str):
     
     if row:
         return {
-            "function_id": row["function_id"],
+            "function_key": row["function_key"],
             "shortcut": row["shortcut"]
         }
     else:
         return {
-            "function_id": "",
+            "function_key": "",
             "shortcut": ""
         }
 

@@ -133,7 +133,7 @@ class ValidatorService:
                 """
                 SELECT f.function_key
                 FROM intents i
-                LEFT JOIN functions f ON i.function_id = f.id
+                LEFT JOIN functions f ON i.function_id = f.function_key
                 WHERE i.intent = ?
                 """,
                 (intent,),

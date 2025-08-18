@@ -33,6 +33,3 @@ async def generate_guide_response(message: str, intent: str, shortcut: Optional[
 
     content = (resp.choices[0].message.content or "").strip()
     return content
-
-async def generate_guide_response_no_shortcut(message:str, intent:str):
-    return True

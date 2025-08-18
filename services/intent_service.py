@@ -17,6 +17,8 @@ llm = ChatOpenAI(api_key=api_key)
 # ChromaDB 임베딩 인스턴스 (싱글톤 패턴)
 _embedding_db = None
 
+SIM_THRESHOLD = 0.3
+
 def get_embedding_db() -> ChromaDBEmbedding:
     """ChromaDB 임베딩 인스턴스를 반환합니다."""
     global _embedding_db
@@ -42,8 +44,8 @@ async def extract_intent_with_rag(text: str) -> Dict[str, Any]:
     metadata = best_match['metadata']
     similarity = 1 - best_match['distance']
     
-    # 유사도가 0.7 이상인 경우에만 RAG 결과 사용
-    if similarity >= 0.7:
+    # 유사도가 SIM_THRESHOLD 이상인 경우에만 RAG 결과 사용
+    if similarity >= SIM_THRESHOLD:
         return {
             "intent": metadata.get('intent', ''),
             "function_id": metadata.get('function_id', ''),

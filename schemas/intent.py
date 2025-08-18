@@ -25,7 +25,10 @@ class IntentStatus(str, Enum):
     low_confidence = "low_confidence"
     confirm_required = "confirm_required"
     no_intent = "no_intent"
-    unknown_method = "unknown_method"
+    unknown_method = "unknown_method",
+    ready_to_execute = "ready_to_excute",
+    cancelled = "cancelled",
+    error = "error"
 
     
 class ParamSpec(BaseModel):
@@ -56,6 +59,7 @@ class IntentResponse(BaseModel):
     similarity: Optional[float] = None
     method_used: Optional[Literal["rag", "llm"]] = None
     shortcut: Optional[str] = None
+    exec: Optional[str] = None
     
 
 class ValidationResponse(BaseModel):
