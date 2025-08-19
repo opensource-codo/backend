@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import re
 from typing import Optional, Dict, Any, Tuple
+from dataclasses import dataclass
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
@@ -16,6 +17,7 @@ client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 UI_GUIDES: Dict[str, Dict[str, Any]] = {
     "open_taskmgr": {
         "ui_path": "작업 표시줄을 우클릭 → '작업 관리자' 클릭",
+        "shortcut": "Ctrl + Shift + Esc",
         "admin_required": False,
         "risk_level": "safe",
     },
@@ -24,7 +26,7 @@ UI_GUIDES: Dict[str, Dict[str, Any]] = {
         "admin_required": False,
         "risk_level": "danger",
         "notes": "삭제 후 복구가 어렵습니다.",
-        # 순수 PowerShell cmdlet만 표기
+        # PowerShell 순정 cmdlet만 표기
         "admin_command": "Clear-RecycleBin -Force",
     },
     "check_disk": {
@@ -39,7 +41,6 @@ UI_GUIDES: Dict[str, Dict[str, Any]] = {
         "admin_required": True,
         "risk_level": "safe",
         "notes": "PowerShell 네이티브 명령 예: Clear-DnsClientCache",
-        # PS 네이티브로 교체
         "admin_command": "Clear-DnsClientCache",
     },
 }
@@ -69,7 +70,7 @@ _CAUTION_PATTERNS = [
 
 def _classify_risk_by_cmd(cmd: Optional[str]) -> Tuple[str, bool]:
     """
-    명령 문자열 기반 위험도 및 관리자 권한 필요 여부를 추정.
+    명령 문자열 기반 위험도 및 관리자 권한 필요 여부 추정.
     return: (risk_level: 'safe'|'caution'|'danger', admin_required: bool)
     """
     if not cmd:
@@ -83,7 +84,7 @@ def _classify_risk_by_cmd(cmd: Optional[str]) -> Tuple[str, bool]:
 
 def _prefer_ps_command(script_command: Optional[str], meta_admin_cmd: Optional[str]) -> Optional[str]:
     """
-    CMD 전용(.cmd/.bat, cmd.exe, 'cmd /c') 냄새가 나면 숨기고,
+    CMD 전용(.cmd/.bat, cmd.exe, 'cmd /c') 패턴이 나오면 숨기고,
     메타에 등록된 PowerShell 대안을 우선 사용한다.
     """
     if meta_admin_cmd:
@@ -96,108 +97,113 @@ def _prefer_ps_command(script_command: Optional[str], meta_admin_cmd: Optional[s
     return script_command
 
 # ─────────────────────────────────────────────────────────────
-# 휴리스틱 가이드 생성 (LLM 전 단계 초안)
+# 출력 페이로드 모델
 # ─────────────────────────────────────────────────────────────
-def build_human_guide(
+@dataclass
+class GuidePayload:
+    ok: bool
+    # 최종 사용자용 메시지(초보자 모드 기준 – 클릭/단축키만)
+    message_markdown: str
+    # '고급' 버튼을 보여줄지 여부(명령 존재 여부)
+    has_advanced: bool
+    # 고급(명령) 섹션 마크다운 (show_commands=True일 때만 세팅)
+    advanced_markdown: Optional[str]
+    # 위험도 및 확인 필요 플래그(프론트에서 모달 제어)
+    risk_level: str  # 'safe'|'caution'|'danger'
+    requires_confirmation: bool
+
+# ─────────────────────────────────────────────────────────────
+# 휴리스틱 가이드(초안)
+# ─────────────────────────────────────────────────────────────
+def build_human_guide_core(
     intent: str,
     shortcut: Optional[str],
     script_command: Optional[str],
-) -> Tuple[str, str, bool]:
+) -> Tuple[str, Optional[str], str, bool, bool]:
     """
-    가이드 초안을 생성한다.
+    코어 초안 생성.
     return:
-      - markdown 텍스트
-      - risk_level('safe'|'caution'|'danger')
-      - requires_confirmation(bool)
+      - basic_md (초보자용: 클릭/단축키만)
+      - advanced_md (고급 명령어 섹션; 없을 수 있음)
+      - risk_level
+      - requires_confirmation
+      - has_advanced (명령 섹션 존재 여부)
     """
     meta = UI_GUIDES.get(intent, {})
     meta_ui = meta.get("ui_path")
     meta_admin_required = bool(meta.get("admin_required", False))
-    # 기본값 없이 받아서 아래에서 휴리스틱과 병합
     meta_risk = meta.get("risk_level")
     meta_notes = meta.get("notes")
     meta_admin_cmd = meta.get("admin_command")
+    meta_shortcut = shortcut or meta.get("shortcut")
 
     # cmd 기반 보조 판정
     risk_by_cmd, admin_by_cmd = _classify_risk_by_cmd(script_command or meta_admin_cmd)
-    # 메타가 있으면 메타, 없으면 휴리스틱
     risk_level = meta_risk or risk_by_cmd
     admin_required = meta_admin_required or admin_by_cmd
 
-    parts: list[str] = []
+    # PowerShell만 허용
+    ps_cmd = _prefer_ps_command(script_command, meta_admin_cmd)
 
-    # 1) 단축키가 있으면 최우선
-    if shortcut:
-        parts.append(f"가장 빠른 방법: **{shortcut}** 누르세요.")
-        if meta_ui:
-            parts.append(f"클릭 경로: {meta_ui}")
+    # ── 기본(초보자) 섹션: 클릭/단축키만 ──
+    basic_parts: list[str] = []
+    # 헤더 문구(요구사항 반영)
+    basic_parts.append("**가장 쉬운 방법: 클릭만 안내**")
 
-    # 2) 단축키 없고 (UI/명령) 중 하나라도 있으면 안내
-    elif script_command or meta_admin_cmd or meta_ui:
-        if meta_ui:
-            parts.append(f"클릭 경로: {meta_ui}")
-        # PS 대안 우선, CMD 냄새 나면 숨긴다
-        cmd_text = _prefer_ps_command(script_command, meta_admin_cmd)
-        if cmd_text:
-            admin_label = "고급(관리자 권한 필요)" if admin_required else "고급"
-            parts.append(f"{admin_label}: 아래 명령을 실행하세요.")
-            parts.append("```powershell\n" + cmd_text + "\n```")
+    if meta_shortcut:
+        basic_parts.append(f"- 단축키: **{meta_shortcut}**")
 
-    # 3) 아무 것도 없으면 기본 문구
-    else:
-        parts.append("해당 기능의 안내를 준비 중입니다.")
+    if meta_ui:
+        basic_parts.append(f"- 클릭 경로: {meta_ui}")
 
-    # 노트/경고
     if meta_notes:
-        parts.append(f"ℹ️ 참고: {meta_notes}")
+        basic_parts.append(f"ℹ️ 참고: {meta_notes}")
+
+    if risk_level == "danger":
+        basic_parts.append("⚠️ 주의: 되돌릴 수 없는 변경이 발생할 수 있습니다.")
+    elif risk_level == "caution":
+        basic_parts.append("⚠️ 주의: 시스템 설정에 영향을 줄 수 있으니 필요 시에만 사용하세요.")
+
+    basic_md = "\n".join(basic_parts).strip()
+
+    # ── 고급(명령) 섹션 ──
+    has_advanced = bool(ps_cmd)
+    advanced_md = None
+    if has_advanced:
+        label = "고급(관리자 권한 필요)" if admin_required else "고급"
+        adv_parts = [
+            f"**{label}: 아래 명령어 보기**  \n(초보자는 이 단계를 건너뛰어도 됩니다.)",
+            "```powershell",
+            ps_cmd,
+            "```",
+        ]
+        advanced_md = "\n".join(adv_parts)
 
     requires_confirmation = (risk_level in ("caution", "danger"))
-    if risk_level == "danger":
-        parts.append("⚠️ 주의: 되돌릴 수 없는 변경이 발생할 수 있습니다.")
-    elif risk_level == "caution":
-        parts.append("⚠️ 주의: 시스템 설정에 영향을 줄 수 있으니 필요 시에만 사용하세요.")
-
-    return ("\n\n".join(parts).strip(), risk_level, requires_confirmation)
+    return basic_md, advanced_md, risk_level, requires_confirmation, has_advanced
 
 # ─────────────────────────────────────────────────────────────
-# LLM 보정 (말투 정리용). 실패 시 휴리스틱 결과 반환.
-# ─────────────────────────────────────────────────────────────
-async def generate_guide_response(
-    message: str,
-    intent: str,
-    shortcut: Optional[str] = None,
-    script_command: Optional[str] = None,
-) -> str:
-    """
-    기존 시그니처 유지: str(Markdown)만 반환 → 기존 호출부 안 깨짐.
-    내부에서 UI/위험도 휴리스틱을 적용한 뒤 LLM으로 말투만 다듬는다.
-    """
-    draft_md, _, _ = build_human_guide(intent, shortcut, script_command)
-
+# LLM 보정 (말투 정리). 실패 시 휴리스틱 결과 사용.
+# 
+async def _polish_markdown_with_llm(draft_md: str, intent: str, message: str) -> str:
     system = (
-        "역할: 당신은 Windows 사용자를 돕는 안내 비서입니다. 친절하게 대답해주세요\n"
+        "역할: 당신은 Windows 사용자를 돕는 안내 비서입니다. 친절하고 간결하게 대답하세요.\n"
         "원칙:\n"
-        "1) UI 경로를 먼저, 단축키가 있으면 최상단에 강조.\n"
-        "2) 명령은 '고급(관리자)' 섹션에서만 간결히. CMD 유도 금지, PowerShell 기준.\n"
-        "3) 단계별, 공손, 과장 금지. 불확실한 정보는 만들지 말 것.\n"
-        "출력: 한국어 Markdown, 불필요한 서론/결론 금지."
+        "1) 초보자 우선. 클릭 경로/단축키만 보여주고, 명령은 언급하지 말 것.\n"
+        "2) 단계를 짧고 명확히. 불필요한 서론 금지.\n"
+        "3) 경고/참고는 간단한 이모지로 안내.\n"
+        "출력: 한국어 Markdown."
     )
-
-    user_prompt = (
-        f"기능: {intent}\n"
-        f"사용자 요청: {message}\n\n"
-        f"초안(다듬어 주세요):\n{draft_md}"
-    )
-
-    # OpenAI 키 없거나 호출 실패하면 초안 그대로 반환
+    user_prompt = f"기능: {intent}\n사용자 요청: {message}\n초안:\n{draft_md}"
     try:
         if not os.getenv("OPENAI_API_KEY"):
             return draft_md
-
         resp = await client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role": "system", "content": system},
-                      {"role": "user", "content": user_prompt}],
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_prompt},
+            ],
             temperature=0.2,
         )
         content = (resp.choices[0].message.content or "").strip()
@@ -206,22 +212,70 @@ async def generate_guide_response(
         return draft_md
 
 # ─────────────────────────────────────────────────────────────
-# 선택: 프론트에서 경고창 띄우고 싶을 때 쓰는 payload 버전
+# 외부 API에서 쓰는 진입점들
 # ─────────────────────────────────────────────────────────────
+async def generate_guide_response(
+    message: str,
+    intent: str,
+    shortcut: Optional[str] = None,
+    script_command: Optional[str] = None,
+    *,
+    show_commands: bool = False,  # ← 기본값: 초보자 모드(명령 숨김)
+) -> str:
+    """
+    (하위 호환) 문자열만 반환. show_commands=False이면 초보자용만.
+    """
+    basic_md, advanced_md, _, _, has_advanced = build_human_guide_core(
+        intent, shortcut, script_command
+    )
+    # 초보자용 출력 LLM 다듬기
+    basic_md = await _polish_markdown_with_llm(basic_md, intent, message)
+
+    if show_commands and advanced_md:
+        # 요구사항 문구 반영
+        header = (
+            "**가장 쉬운 방법: 클릭만 안내**\n\n"
+            "필요하면 아래 **‘고급’** 버튼을 눌러 명령어를 확인하세요."
+        )
+        return f"{header}\n\n{basic_md}\n\n---\n\n{advanced_md}"
+
+    # 기본은 명령 숨김
+    footer_hint = "\n\n_필요하면 아래 ‘고급’ 버튼을 눌러 명령어 보기_." if has_advanced else ""
+    return f"{basic_md}{footer_hint}"
+
 async def generate_guide_payload(
     message: str,
     intent: str,
     shortcut: Optional[str] = None,
     script_command: Optional[str] = None,
+    *,
+    show_commands: bool = False,  # ← 기본값: 초보자 모드
 ) -> Dict[str, Any]:
     """
-    텍스트 + 위험도/확인 필요 플래그를 함께 반환.
+    텍스트 + 위험도/확인 필요 플래그 + 고급 섹션 유무를 함께 반환.
+    프론트에서:
+      - 항상 basic message를 먼저 보여주고
+      - has_advanced=True면 '고급' 토글 버튼 노출
+      - show_commands=True일 때만 advanced_markdown 렌더
+      - danger/caution이면 requires_confirmation에 따라 확인 모달 표시
     """
-    draft_md, risk_level, requires_confirmation = build_human_guide(intent, shortcut, script_command)
-    text = await generate_guide_response(message, intent, shortcut, script_command)
-    return {
-        "ok": True,
-        "message_markdown": text,
-        "risk_level": risk_level,
-        "requires_confirmation": requires_confirmation,
-    }
+    basic_md, advanced_md, risk_level, requires_confirmation, has_advanced = build_human_guide_core(
+        intent, shortcut, script_command
+    )
+    # 초보자용 문구 LLM 다듬기
+    basic_md = await _polish_markdown_with_llm(basic_md, intent, message)
+
+    # 최종 사용자 표현 스펙 반영
+    header = "**가장 쉬운 방법: 클릭만 안내**\n\n"
+    hint = "\n\n_필요하면 아래 ‘고급’ 버튼을 눌러 명령어 보기_." if has_advanced else ""
+    message_markdown = header + basic_md + hint
+
+    payload = GuidePayload(
+        ok=True,
+        message_markdown=message_markdown,
+        has_advanced=has_advanced,
+        advanced_markdown=advanced_md if show_commands and advanced_md else None,
+        risk_level=risk_level,
+        requires_confirmation=requires_confirmation,
+    )
+    return payload.__dict__
