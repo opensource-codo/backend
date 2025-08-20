@@ -23,7 +23,6 @@ def test_validator():
     result = validator.validate(
         intent="파일 복사",
         parameters={},
-        method="EXECUTION",
         text="C:\\Users\\test.txt를 C:\\backup\\test.txt로 복사해줘"
     )
     print(f"   결과: {result}")
@@ -33,7 +32,6 @@ def test_validator():
     result = validator.validate(
         intent="파일 삭제",
         parameters={},
-        method="EXECUTION",
         text="C:\\temp\\old.txt 파일을 삭제해줘"
     )
     print(f"   결과: {result}")
@@ -43,7 +41,6 @@ def test_validator():
     result = validator.validate(
         intent="파일 복사",
         parameters={},
-        method="GUIDE",
         text="파일을 복사하는 방법을 알려줘"
     )
     print(f"   결과: {result}")
@@ -53,7 +50,6 @@ def test_validator():
     result = validator.validate(
         intent="파일 복사",
         parameters={"src_path": "C:\\source.txt", "dst_path": "C:\\dest.txt"},
-        method="EXECUTION",
         text="파일을 복사해줘"
     )
     print(f"   결과: {result}")

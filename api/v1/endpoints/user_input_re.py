@@ -33,15 +33,31 @@ class ConfirmRequest(BaseModel):
 
 @router.post("/", response_model=IntentResponse)
 async def handle_user_input(request: UserRequest):
-    # 1) RAG로 intent 추출
-    # TODO : intent 임시로
+    # 1) 새로운 Chroma 기반 RAG로 intent 추출
     intent_result = await extract_intent_with_rag(request.text)
     intent = (intent_result.get("intent") or "").strip()
     similarity = float(intent_result.get("similarity", 0.0))
     method_used = intent_result.get("method", "unknown")
-    # intent = "rename_file"
-    # similarity = 0.85
-    # method_used = "rag"
+    function_key_from_rag = intent_result.get("function_key", "").strip()
+    
+    # RAG에서 function_key를 직접 가져온 경우 우선 사용
+    if function_key_from_rag:
+        function_key = function_key_from_rag
+        # RAG 결과에서 바로 함수 정보 조회
+        fn = db_get_function_info(function_key)
+        shortcut = fn.get("shortcut") if fn else ""
+    else:
+        # 기존 방식으로 function_key 조회
+        fn = db_get_function_info(intent)
+        function_key = (fn.get("function_key") or "").strip()
+        shortcut = fn.get("shortcut") or ""
+        
+        # fallback: validator에서 조회
+        if not function_key:
+            try:
+                function_key = validator_service._get_function_key_from_intent(intent)
+            except Exception:
+                function_key = ""
 
     if not intent:
         alts = await search_similar_intents(request.text, n_results=5)
@@ -69,19 +85,7 @@ async def handle_user_input(request: UserRequest):
             method_used=method_used,
         )
 
-    # 2) 함수 메타
-    fn = db_get_function_info(intent)  # 반드시 function_key를 포함하도록 구현 권장
-    function_key = (fn.get("function_key") or "").strip()
-    shortcut = fn.get("shortcut") or ""
-    # TODO : shortcut 임시로
-    if not function_key:
-        # fallback: validator에서 조회(내부조인)
-        try:
-            function_key = validator_service._get_function_key_from_intent(intent)  # 내부함수이지만 실용적 폴백
-        except Exception:
-            function_key = ""
-
-    # 3) GUIDE
+    # 2) GUIDE
     if request.method == MethodName.GUIDE:
         guide = await generate_guide_response(request.text, intent, shortcut)
         return IntentResponse(
@@ -131,9 +135,6 @@ async def handle_user_input(request: UserRequest):
         # 텍스트 추정값 + 클라이언트 파라미터 병합(선택),
         # validate 내부에서도 텍스트 재추정/머지하므로 안전함
         pre_params = extract_params_llm(intent, request.text, schema) or {}
-        # rb_params = validate_text_parameters(intent, request.text) or {}
-        # for k, v_ in rb_params.items():
-        #     pre_params.setdefault(k, v_)
         v = validate(intent, pre_params, text=request.text) 
         
     else:
