@@ -2,6 +2,7 @@
 import json
 import types
 import builtins
+import os
 os.environ["OPENAI_API_KEY"] = "test"
 import services.param_extractor as pe
 

@@ -15,6 +15,49 @@ client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 # UI/명령어 매핑 메타 (빠른 운영용; 나중에 DB로 이관 가능)
 # ─────────────────────────────────────────────────────────────
 UI_GUIDES: Dict[str, Dict[str, Any]] = {
+    "open_control_panel": {
+        "ui_path": "Win + R → 'control' 입력 → 엔터",
+        "shortcut": "Win + R → control",
+        "admin_required": False,
+        "risk_level": "safe",
+    },
+    "system_info": {
+        "ui_path": "Win + Pause/Break",
+        "shortcut": "Win + Pause/Break",
+        "admin_required": False,
+        "risk_level": "safe",
+    },
+    "device_manager": {
+        "ui_path": "시작 버튼 우클릭 → '장치 관리자'",
+        "shortcut": "Win + X → M",
+        "admin_required": True,
+        "risk_level": "caution",
+        "notes": "드라이버 설치/삭제 작업은 시스템에 영향을 줄 수 있습니다.",
+        "admin_command": "devmgmt.msc",
+    },
+    "network_adapter_reset": {
+        "ui_path": "제어판 → 네트워크 및 공유 센터 → 어댑터 설정 변경 → 어댑터 우클릭 → '사용 안 함' 후 다시 '사용'",
+        "admin_required": True,
+        "risk_level": "caution",
+        "notes": "네트워크 연결이 일시적으로 끊깁니다.",
+        "admin_command": "Disable-NetAdapter -Name '이더넷' -Confirm:$false; Enable-NetAdapter -Name '이더넷' -Confirm:$false",
+    },
+    "windows_update": {
+        "ui_path": "설정 → 업데이트 및 보안 → Windows 업데이트 → '업데이트 확인'",
+        "admin_required": True,
+        "risk_level": "safe",
+        "notes": "업데이트 후 재부팅이 필요할 수 있습니다.",
+        "admin_command": "UsoClient StartScan",
+    },
+    "shutdown_restart": {
+        "ui_path": "시작 메뉴 → 전원 → 다시 시작",
+        "shortcut": "Alt + F4 (바탕화면에서) → '다시 시작' 선택",
+        "admin_required": True,
+        "risk_level": "danger",
+        "notes": "작업 중인 데이터는 반드시 저장해야 합니다.",
+        "admin_command": "shutdown /r /t 0",
+    },
+    
     "open_taskmgr": {
         "ui_path": "작업 표시줄을 우클릭 → '작업 관리자' 클릭",
         "shortcut": "Ctrl + Shift + Esc",
