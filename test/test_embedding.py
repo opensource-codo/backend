@@ -24,36 +24,34 @@ def test_embedding():
         # 검색 테스트
         print("\n2. 검색 테스트 시작...")
         test_queries = [
-            "파일을 삭제하고 싶어",
-            "파일을 복사해줘",
-            "제어판 보여줘",
-            "캡쳐해줘",
-            "붙여넣기 해줘"
+            "스크린 캡처 어떻게 해?",
+            "제어판 열어줘",
+            "파일 복사해줘",
+            "파일 붙여넣기 어떻게 해?",
+            "파일 잘라내기 실행해줘"
         ]
         
         for query in test_queries:
             print(f"\n쿼리: '{query}'")
-            results = embedding_db.search_intent(query, n_results=1)
-            # print(results)
-            for i, result in enumerate(results, 1):
-                metadata = result['metadata']
-                distance = result['distance']
-                print(f"  {i}. 유사도: {1 - distance:.3f}")
-                print(f"     타입: {metadata.get('type', 'unknown')}")
-                print(f"     의도: {metadata.get('intent', 'N/A')}")
-                print(f"     함수: {metadata.get('function_name', 'N/A')}")
-                print(f"     함수키: {metadata.get('function_key', 'N/A')}")
-                print(f"     도움말: {metadata.get('help_text', 'N/A')[:50]}...")
-                # if metadata.get('type') == 'intent':
-                #     print(f"     의도: {metadata.get('intent', 'N/A')}")
-                #     print(f"     함수: {metadata.get('function_name', 'N/A')}")
-                # elif metadata.get('type') == 'function':
-                #     print(f"     함수명: {metadata.get('function_name', 'N/A')}")
-                #     print(f"     함수키: {metadata.get('function_key', 'N/A')}")
-                # elif metadata.get('type') == 'help_content':
-                #     print(f"     도움말: {metadata.get('help_text', 'N/A')[:50]}...")
-                print()
-        
+            res = embedding_db.find_best_intent(query=query, top_k=30)
+
+            if not res.get("ok"):
+                print("  검색 실패:", res.get("message"))
+                continue
+
+            top = res.get("top_intent")
+            if not top:
+                print("  후보 없음")
+                continue
+
+            print(f"  [TOP] 의도: {top['intent']} | 함수키: {top['function_key']} | 점수(sim): {top['score']:.3f}")
+            print(f"  상태: {res['status']}  (threshold={res['debug']['threshold']})")
+
+            # 후보 몇 개 더 보기
+            print("  후보 상위:")
+            for i, c in enumerate(res.get("candidates", [])[0:5], 1):
+                print(f"    {i}. 의도: {c['intent']} | 함수키: {c['function_key']} | 점수(sim): {c['score']:.3f} | views: {','.join(c['views'])}")
+                
         print("=== 테스트 완료 ===")
         
     except Exception as e:

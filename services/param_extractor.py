@@ -58,7 +58,7 @@ _SYS_PROMPT = (
 def extract_params_llm(intent: str, text: str, schema: Dict[str, Any], model: str = "gpt-4o-mini") -> Dict[str, Any]:
     """
     OpenAI Chat Completions + function calling 로 파라미터 추출.
-    - schema: validator_service.get_intent_params(intent) 결과 (required/optional/choices/desc 포함)
+    - schema: validator_service.get_intent_params(intent) 결과 (required/optional/danger(caution) 포함)
     - 반환: 스키마 키만 포함한 dict
     """
     if not (intent and text and schema):

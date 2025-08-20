@@ -110,7 +110,9 @@ async def handle_user_input(request: UserRequest):
     # parameters = validate_text_parameters(intent, request.text)
     # v = validate(intent, parameters or {}, method=str(request.method), text=request.text)
     # schema = validator_service.get_function_params(intent)  # 파라미터 스키마(가이드용)
-    schema = validator_service.get_intent_params(intent)
+    # schema = validator_service.get_intent_params(intent)
+    schema = validator_service.get_function_params(function_key)
+    # required, optional, danger
 
     # function 매핑 누락
     if schema.get("not_configured"):
@@ -129,10 +131,11 @@ async def handle_user_input(request: UserRequest):
         # 텍스트 추정값 + 클라이언트 파라미터 병합(선택),
         # validate 내부에서도 텍스트 재추정/머지하므로 안전함
         pre_params = extract_params_llm(intent, request.text, schema) or {}
-        rb_params = validate_text_parameters(intent, request.text) or {}
-        for k, v_ in rb_params.items():
-            pre_params.setdefault(k, v_)
-        v = validate(intent, pre_params, method=MethodName.EXECUTION, text=request.text) 
+        # rb_params = validate_text_parameters(intent, request.text) or {}
+        # for k, v_ in rb_params.items():
+        #     pre_params.setdefault(k, v_)
+        v = validate(intent, pre_params, text=request.text) 
+        
     else:
         return IntentResponse(
             intent=intent,
@@ -195,7 +198,8 @@ async def handle_user_input(request: UserRequest):
             method_used=method_used,
             shortcut=shortcut,
         )
-
+        
+    # 위험 작업이 아닌 경우에만 실행
     # 실행
     params = v.get("normalized_params", {})
     plan = await plan_action(function_key or intent, params)
@@ -239,7 +243,7 @@ async def continue_intent(req: ContinueRequest):
     merged.update(req.parameters or {})
 
     # 재검증 (RAG 없음!)
-    v = validate(intent, parameters=merged, method=MethodName.EXECUTION, text=req.text or "")
+    v = validate(intent, parameters=merged, text=req.text or "")
     schema = st.get("schema") or validator_service.get_intent_params(intent)
 
     if not v["valid"]:
@@ -351,7 +355,7 @@ async def confirm_intent(req: ConfirmRequest):
     if not plan.get("ok"):
         return IntentResponse(
             intent=intent,
-            method=req.method,
+            method=MethodName.EXECUTION,
             parameters=params,
             status="error",
             message=plan.get("message", "실행 계획 생성 실패"),

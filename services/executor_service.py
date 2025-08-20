@@ -2,6 +2,7 @@
 import asyncio
 import os
 import shlex
+import uuid
 from typing import Dict, Any, Callable, Awaitable, Optional
 from dataclasses import dataclass
 from jinja2 import Template
@@ -16,6 +17,8 @@ from jinja2 import Template
 # 레지스트리 승격 필요 : screenshot, active_window 캡처, 창 정렬, 특정 앱 실행 후 상태 확인, 민감 작업, 입력 검증 기능별로 크게 다를 경우 
 
 _HANDLER_REGISTRY: Dict[str, "ActionPlanner"] = {}
+
+# TODO : 레지스트리 기능 추가 및 수정 - 현재는 DB 기반
 
 def register(function_key: str):
     """클래스를 전역 플래너 레지스트리에 등록하는 데코레이터"""
@@ -56,6 +59,7 @@ FORBIDDEN_TOKENS = {"&&", "||", "|", ";", "`", "$(", "<(", ">", ">>"}  # 아주 
 def _new_exec_base(name: str, preview: Optional[str] = None,
                    requires_confirmation: Optional[bool] = None,
                    timeout_ms: Optional[int] = None) -> Dict[str, Any]:
+    # TODO : id 
     return {
         "version": 1,
         "id": str(uuid.uuid4()),
@@ -214,8 +218,8 @@ class PastePlanner(ActionPlanner):
 
 async def plan_action(function_key: str, parameters: Dict[str, Any], shortcut: Optional[str] = None) -> Dict[str, Any]:
     """
-    1) 레지스트리에 커스텀 플래너가 있으면 그걸 사용
-    2) 없으면 DB(functions)에서 script_command/Path로 GenericScriptPlanner 사용
+    1) 레지스트리에 커스텀 플래너가 있으면 그걸 사용 : 현재는 X 
+    2) 없으면 DB(functions)에서 script_command/script_path로 GenericScriptPlanner 사용
     3) 둘 다 없으면 오류
     """
     planner = _HANDLER_REGISTRY.get(function_key)
@@ -231,7 +235,7 @@ async def plan_action(function_key: str, parameters: Dict[str, Any], shortcut: O
                 script_command=row.get("script_command") or "",
                 shell=(row.get("shell") or DEFAULT_SHELL),
                 shortcut=row.get("shortcut"),
-                cwd=None,  # 필요 시 고정 작업디렉터리 지정
+                # cwd=None,  # 필요 시 고정 작업디렉터리 지정
             )
         else:
             return {"ok": False, "message": f"플래너 없음: {function_key}"}

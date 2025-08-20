@@ -45,6 +45,7 @@ class ValidatorService:
 
         conn = self.get_db_connection()
         try:
+            # TODO : required DB 구조 보고 수정 필요
             cur = conn.execute(
                 """
                 SELECT name, type, required, default_json, choices_json, description
@@ -207,33 +208,11 @@ class ValidatorService:
     # ───────────────────────────────────────────────
     # 검증 메인
     # ───────────────────────────────────────────────
-    def validate(
-        self, intent: str, parameters: Dict[str, Any], method: str = "GUIDE", text: str = ""
-    ) -> Dict[str, Any]:
+    def validate(self, intent: str, parameters: Dict[str, Any], text: str = "") -> Dict[str, Any]:
         """
         intent와 파라미터를 검증합니다.
-
-        Returns(dict):
-            valid: bool
-            missing_params: List[str]
-            normalized_params: Dict[str, Any]
-            errors: List[str]
-            requires_confirmation: bool
-            message: str
         """
-        method = (method or "GUIDE").upper()
-
-        # GUIDE는 파라미터 검증 불필요
-        if method == "GUIDE":
-            return {
-                "valid": True,
-                "missing_params": [],
-                "normalized_params": {},
-                "errors": [],
-                "requires_confirmation": False,
-                "message": "가이드 모드: 파라미터 검증이 필요하지 않습니다.",
-            }
-
+        
         # 스키마 로딩
         schema = self.get_intent_params(intent)
         if schema.get("not_configured"):
@@ -255,39 +234,28 @@ class ValidatorService:
         # 스키마 검증/정규화
         normalized, missing, errors = self._apply_schema(merged_params, schema)
 
-        if method == "EXECUTION":
-            if missing or errors:
-                parts = []
-                if missing:
-                    parts.append(f"누락: {', '.join(missing)}")
-                if errors:
-                    parts.append(f"오류: {', '.join(errors)}")
-                return {
-                    "valid": False,
-                    "missing_params": missing,
-                    "normalized_params": normalized,
-                    "errors": errors,
-                    "requires_confirmation": False,
-                    "message": "실행 모드: " + "; ".join(parts),
-                }
-
+        if missing or errors:
+            parts = []
+            if missing:
+                parts.append(f"누락: {', '.join(missing)}")
+            if errors:
+                parts.append(f"오류: {', '.join(errors)}")
             return {
-                "valid": True,
-                "missing_params": [],
+                "valid": False,
+                "missing_params": missing,
                 "normalized_params": normalized,
-                "errors": [],
-                "requires_confirmation": bool(schema.get("danger", False)),
-                "message": "실행 모드: 모든 파라미터가 준비되었습니다.",
+                "errors": errors,
+                "requires_confirmation": False,
+                "message": "실행 모드: " + "; ".join(parts),
             }
-
-        # 알 수 없는 method
+            
         return {
-            "valid": False,
+            "valid": True,
             "missing_params": [],
-            "normalized_params": {},
-            "errors": [f"지원하지 않는 method: {method}"],
-            "requires_confirmation": False,
-            "message": "잘못된 실행 방법입니다.",
+            "normalized_params": normalized,
+            "errors": [],
+            "requires_confirmation": bool(schema.get("danger", False)),
+            "message": "실행 모드: 모든 파라미터가 준비되었습니다.",
         }
 
     # ───────────────────────────────────────────────
@@ -490,9 +458,9 @@ def validate_text_parameters(intent: str, text: str) -> Dict[str, Any]:
         return {}
 
 # 기존 코드와의 호환성을 위한 함수
-def validate(intent: str, parameters: Dict[str, Any], method: str = "GUIDE", text: str = "") -> Dict[str, Any]:
+def validate(intent: str, parameters: Dict[str, Any], text: str = "") -> Dict[str, Any]:
     """
     기존 코드와의 호환성을 위한 함수입니다.
     validator_service.validate()를 호출합니다.
     """
-    return validator_service.validate(intent, parameters, method, text)
+    return validator_service.validate(intent, parameters, text)

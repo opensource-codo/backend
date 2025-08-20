@@ -6,6 +6,8 @@ import os
 import numpy as np
 from openai import OpenAI
 from dotenv import load_dotenv
+import re
+from collections import defaultdict
 
 load_dotenv()
 api_key = os.getenv("OPENAI_API_KEY")
@@ -15,7 +17,103 @@ if not api_key:
 # OpenAI 클라이언트 초기화
 openai_client = OpenAI(api_key=api_key)
 
+# 튜닝 가중치
+VIEW_WEIGHT = {"SHORT":1.0, "DESC": 0.7, "HELP": 0.4}
+# late fusion: 최종 스코어 = max + bonus*(sum - max)
+FUSION_BONUS = 0.15
+# 최종 신뢰 임계치 (튜닝 지점)
+DEFAULT_THRESHOLD = 0.28
 
+#============================
+
+def _first_sentence(text: str, max_len: int = 120) -> str:
+    """도움말/설명에서 첫 문장 한 줄 요약."""
+    if not text:
+        return ""
+    s = re.split(r"[.!?。\n]", text.strip())[0]
+    s = s.strip()
+    return s[:max_len]
+
+
+def guess_aliases(intent: str, function_key: str) -> List[str]:
+    """
+    간단 규칙 기반 동의어/별칭 생성.
+    - 필요 시 사전(룰)만 보강해도 효과적.
+    """
+    intent = (intent or "").strip()
+    fkey = (function_key or "").strip()
+
+    aliases: set[str] = set()
+    if fkey:
+        aliases.add(fkey)
+        parts = re.split(r"[_\-]+", fkey)
+        if len(parts) > 1:
+            aliases.add(" ".join(parts))  # e.g., rename_file -> "rename file"
+
+    # 파일 삭제/복사/붙여넣기/잘라내기
+    if any(k in intent for k in ["삭제", "지우", "제거"]) or "delete" in fkey:
+        aliases.update(["파일 삭제", "파일 제거", "파일 지우기", "delete file", "del", "Shift+Delete", "휴지통", "영구 삭제"])
+
+    if any(k in intent for k in ["붙여넣", "붙여", "paste"]) or "paste" in fkey:
+        aliases.update(["파일 붙여넣기", "paste file", "Ctrl+V"])
+        
+    if any(k in intent for k in ["복사", "copy"]) or "copy" in fkey:
+        aliases.update(["파일 복사", "copy file", "Ctrl+C"])
+        
+    if any(k in intent for k in ["잘라내", "자르기", "cut"]) or "cut" in fkey:
+        aliases.update(["파일 잘라내기", "cut file", "Ctrl+X"])
+        
+    if any(k in intent for k in ["변경", "이름", "rename"]) or "rename" in fkey:
+        aliases.update(["파일 이름 변경", "rename file", "F12"])
+        
+    # 제어판
+    if any(k in intent for k in ["제어판", "control panel", "컨트롤 패널"]) or "control_panel" in fkey:
+        aliases.update(["제어판", "Control Panel", "control panel", "컨트롤 패널"])
+
+    # 캡처/스크린샷
+    if any(k in intent for k in ["캡처", "스크린샷", "스크린 캡처", "프린트스크린", "화면", "screenshot", "screen"]) or "screenshot" in fkey:
+        aliases.update(["스크린샷", "캡처", "PrintScreen", "screenshot", "PrtSc", "Win+Shift+S", "스니핑툴", "Snipping Tool"])
+
+    # 전원/재시작/종료 (예시)
+    if any(k in intent for k in ["재시작", "리부트", "restart"]) or "restart" in fkey:
+        aliases.update(["재시작", "다시 시작", "restart", "win restart"])
+    if any(k in intent for k in ["종료", "끄기", "shutdown"]) or "shutdown" in fkey:
+        aliases.update(["종료", "shutdown", "전원 끄기"])
+    
+
+    if "프린터" in intent and any(k in intent for k in ["초기화", "재설정", "리셋"]):
+        aliases.update(["프린터 초기화", "프린터 재설정", "프린터 리셋", "인쇄 초기화", "print reset"])
+
+    return sorted(aliases)
+
+
+def short_hint_from_help(help_text: str, intent: str) -> str:
+    """SHORT 뷰에 넣을 핵심 한 줄. 도움말 기반으로 뽑고, 없으면 intent 사용."""
+    s = _first_sentence(help_text, max_len=100)
+    return s if s else intent
+
+
+def make_one_liner_description(intent: str, help_text: str) -> str:
+    """DESC 뷰에 들어갈 1~2문장 설명."""
+    base = _first_sentence(help_text, max_len=140)
+    if base:
+        return base
+    return f"{intent} 기능입니다."
+
+
+def _to_similarity(distance: float, metric: str = "cosine") -> float:
+    """
+    Chroma distance -> similarity 변환.
+    - cosine: sim = 1 - distance
+    - 기타    : sim = 1 / (1 + distance)
+    """
+    if distance is None:
+        return 0.0
+    if metric == "cosine":
+        return max(0.0, 1.0 - float(distance))
+    return 1.0 / (1.0 + float(distance))
+
+#=========================
 class ChromaDBEmbedding:
     def __init__(self, db_path: str = "assistant.db", chroma_persist_directory: str = "./chroma_db"):
         """
@@ -150,241 +248,17 @@ class ChromaDBEmbedding:
             print(f"임베딩 오류: {e}")
             return []
 
-    def load_and_embed_intents(self):
-        """intents 테이블의 데이터를 로드하고 임베딩합니다."""
-        if not self.intents_collection:
-            print("intents 컬렉션이 초기화되지 않았습니다.")
-            return
-            
-        conn = self.get_db_connection()
-        cursor = conn.execute("""
-            SELECT i.id, i.intent, i.function_id, 
-                   f.function_key, f.function_name, f.shortcut,
-                   hc.help_text
-            FROM intents i
-            LEFT JOIN functions f ON i.function_id = f.id
-            LEFT JOIN help_contents hc ON i.id = hc.intent_id
-        """)
-        
-        intents_data = cursor.fetchall()
-        conn.close()
-        
-        if not intents_data:
-            print("intents 테이블에 데이터가 없습니다.")
-            return
-        
-        # 기존 데이터 삭제
-        try:
-            # 모든 문서를 가져와서 ID로 삭제
-            existing_data = self.intents_collection.get()
-            if existing_data['ids']:
-                self.intents_collection.delete(ids=existing_data['ids'])
-        except Exception as e:
-            print(f"기존 intents 데이터 삭제 실패: {e}")
-            return
-        
-        documents = []
-        metadatas = []
-        ids = []
-        
-        for row in intents_data:
-            # 검색용 텍스트 구성 (도움말 정보도 포함)
-            search_text = f"의도: {row['intent']}"
-            if row['function_name']:
-                search_text += f" 함수: {row['function_name']}"
-            if row['shortcut']:
-                search_text += f" 단축키: {row['shortcut']}"
-            if row['help_text']:
-                search_text += f" 도움말: {row['help_text']}"
-            
-            documents.append(search_text)
-            metadatas.append({
-                "intent": row['intent'] or "",
-                "function_id": str(row['function_id']) if row['function_id'] else "",
-                "function_key": row['function_key'] or "",
-                "function_name": row['function_name'] or "",
-                "shortcut": row['shortcut'] or "",
-                "help_text": row['help_text'] or "",
-                "type": "intent"
-            })
-            ids.append(f"intent_{row['id']}")
-        
-        # ChromaDB에 추가
-        self.intents_collection.add(
-            documents=documents,
-            metadatas=metadatas,
-            ids=ids
-        )
-        
-        print(f"{len(intents_data)}개의 intent 데이터가 임베딩되었습니다.")
-    
-    def load_and_embed_functions(self):
-        """functions 테이블의 데이터를 로드하고 임베딩합니다."""
-        if not self.functions_collection:
-            print("functions 컬렉션이 초기화되지 않았습니다.")
-            return
-            
-        conn = self.get_db_connection()
-        cursor = conn.execute("""
-            SELECT id, function_key, function_name, script_path, shortcut, script_command
-            FROM functions
-        """)
-        
-        functions_data = cursor.fetchall()
-        conn.close()
-        
-        if not functions_data:
-            print("functions 테이블에 데이터가 없습니다.")
-            return
-        
-        # 기존 데이터 삭제
-        try:
-            # 모든 문서를 가져와서 ID로 삭제
-            existing_data = self.functions_collection.get()
-            if existing_data['ids']:
-                self.functions_collection.delete(ids=existing_data['ids'])
-        except Exception as e:
-            print(f"기존 functions 데이터 삭제 실패: {e}")
-            return
-        
-        documents = []
-        metadatas = []
-        ids = []
-        
-        for row in functions_data:
-            # 검색용 텍스트 구성
-            search_text = f"함수: {row['function_name']}"
-            if row['function_key']:
-                search_text += f" 키: {row['function_key']}"
-            if row['shortcut']:
-                search_text += f" 단축키: {row['shortcut']}"
-            if row['script_command']:
-                search_text += f" 명령어: {row['script_command']}"
-            
-            documents.append(search_text)
-            metadatas.append({
-                "function_key": row['function_key'] or "",
-                "function_name": row['function_name'] or "",
-                "script_path": row['script_path'] or "",
-                "shortcut": row['shortcut'] or "",
-                "script_command": row['script_command'] or "",
-                "type": "function"
-            })
-            ids.append(f"function_{row['id']}")
-        
-        # ChromaDB에 추가
-        self.functions_collection.add(
-            documents=documents,
-            metadatas=metadatas,
-            ids=ids
-        )
-        
-        print(f"{len(functions_data)}개의 function 데이터가 임베딩되었습니다.")
-    
-    def load_and_embed_help_contents(self):
-        """help_contents 테이블의 데이터를 로드하고 임베딩합니다."""
-        if not self.help_contents_collection:
-            print("help_contents 컬렉션이 초기화되지 않았습니다.")
-            return
-            
-        conn = self.get_db_connection()
-        cursor = conn.execute("""
-            SELECT hc.id, hc.help_text, hc.intent_id, i.intent
-            FROM help_contents hc
-            LEFT JOIN intents i ON hc.intent_id = i.id
-        """)
-        
-        help_data = cursor.fetchall()
-        conn.close()
-        
-        if not help_data:
-            print("help_contents 테이블에 데이터가 없습니다.")
-            return
-        
-        # 기존 데이터 삭제
-        try:
-            # 모든 문서를 가져와서 ID로 삭제
-            existing_data = self.help_contents_collection.get()
-            if existing_data['ids']:
-                self.help_contents_collection.delete(ids=existing_data['ids'])
-        except Exception as e:
-            print(f"기존 help_contents 데이터 삭제 실패: {e}")
-            return
-        
-        documents = []
-        metadatas = []
-        ids = []
-        
-        for row in help_data:
-            # 검색용 텍스트 구성
-            search_text = f"도움말: {row['help_text']}"
-            if row['intent']:
-                search_text += f" 의도: {row['intent']}"
-            
-            documents.append(search_text)
-            metadatas.append({
-                "help_text": row['help_text'] or "",
-                "intent_id": str(row['intent_id']) if row['intent_id'] else "",
-                "intent": row['intent'] or "",
-                "type": "help_content"
-            })
-            ids.append(f"help_{row['id']}")
-        
-        # ChromaDB에 추가
-        self.help_contents_collection.add(
-            documents=documents,
-            metadatas=metadatas,
-            ids=ids
-        )
-        
-        print(f"{len(help_data)}개의 help_content 데이터가 임베딩되었습니다.")
-    
-    def create_unified_collection(self):
-        """모든 데이터를 통합한 검색용 컬렉션을 생성합니다."""
+    def load_and_embed_unified_intents(self):
+        """
+        v_intent_docs를 읽어 intent당 3개 뷰(SHORT/DESC/HELP) 문서를 생성해 임베딩한다.
+        - SHORT: 의도/함수키/별칭/핵심 한줄
+        - DESC : 1~2문장 요약 설명
+        - HELP : 잘린 원 도움말(노이즈 줄이기 위해 400~800자 권장)
+        """
         if not self.unified_collection:
             print("unified_collection이 초기화되지 않았습니다.")
             return
-            
-        # 기존 통합 컬렉션 삭제 - ChromaDB에서는 where={} 대신 다른 방법 사용
-        try:
-            # 모든 문서를 가져와서 ID로 삭제
-            existing_data = self.unified_collection.get()
-            if existing_data['ids']:
-                self.unified_collection.delete(ids=existing_data['ids'])
-        except Exception as e:
-            print(f"기존 통합 컬렉션 데이터 삭제 실패: {e}")
-            return
-        
-        # intents 데이터 추가
-        intents_results = self.intents_collection.get()
-        if intents_results['documents']:
-            self.unified_collection.add(
-                documents=intents_results['documents'],
-                metadatas=intents_results['metadatas'],
-                ids=intents_results['ids']
-            )
-        
-        # functions 데이터 추가
-        functions_results = self.functions_collection.get()
-        if functions_results['documents']:
-            self.unified_collection.add(
-                documents=functions_results['documents'],
-                metadatas=functions_results['metadatas'],
-                ids=functions_results['ids']
-            )
-        
-        # help_contents 데이터 추가
-        help_results = self.help_contents_collection.get()
-        if help_results['documents']:
-            self.unified_collection.add(
-                documents=help_results['documents'],
-                metadatas=help_results['metadatas'],
-                ids=help_results['ids']
-            )
-        
-        print("통합 검색 컬렉션이 생성되었습니다.")
-    
-    def load_and_embed_unified_intents(self):
+
         conn = self.get_db_connection()
         cur = conn.execute("""
             SELECT intent_id, intent, function_key, function_name, help_text
@@ -406,56 +280,231 @@ class ChromaDBEmbedding:
             print("통합 컬렉션 초기화 실패:", e)
 
         documents, metadatas, ids = [], [], []
-        for r in rows:
-            # 도움말이 너무 길어 의도를 덮어쓰지 않도록 적당히 자르거나(예: 800자) 요약/키워드만 포함 추천
-            help_trim = (r["help_text"] or "")[:800]
 
-            # 한 문서 = 한 의도
-            doc = (
-                f"의도: {r['intent']}\n"
-                f"함수 설명: {r['function_name'] or ''}\n"
-                f"함수명: {r['function_key'] or ''}\n"
-                f"도움말: {help_trim}"
+        for r in rows:
+            intent_id = r["intent_id"]
+            intent = (r["intent"] or "").strip()
+            fkey = (r["function_key"] or "").strip()
+            fname = (r["function_name"] or "").strip()
+            help_trim = (r["help_text"] or "")[:700]  # 길이 튜닝 지점
+
+            # 1) SHORT
+            aliases = guess_aliases(intent, fkey)
+            doc_short = (
+                f"의도: {intent}\n"
+                f"함수키: {fkey}\n"
+                f"별칭: {', '.join(aliases)}\n"
+                f"핵심: {short_hint_from_help(help_trim, intent)}"
             )
-            documents.append(doc)
+            documents.append(doc_short)
             metadatas.append({
                 "type": "intent",
-                "intent": r["intent"] or "",
-                "function_key": r["function_key"] or "",
-                "function_name": r["function_name"] or "",
+                "intent": intent,
+                "function_key": fkey,
+                "function_name": fname,
+                "view": "SHORT",
             })
-            ids.append(f"intent_{r['intent_id']}")
+            ids.append(f"intent_{intent_id}_short")
 
+            # 2) DESC
+            desc = make_one_liner_description(intent, help_trim)
+            doc_desc = f"의도: {intent}\n설명: {desc}"
+            documents.append(doc_desc)
+            metadatas.append({
+                "type": "intent",
+                "intent": intent,
+                "function_key": fkey,
+                "function_name": fname,
+                "view": "DESC",
+            })
+            ids.append(f"intent_{intent_id}_desc")
+
+            # 3) HELP
+            doc_help = f"도움말: {help_trim}"
+            documents.append(doc_help)
+            metadatas.append({
+                "type": "intent",
+                "intent": intent,
+                "function_key": fkey,
+                "function_name": fname,
+                "view": "HELP",
+            })
+            ids.append(f"intent_{intent_id}_help")
+
+        # 배치 add
         self.unified_collection.add(
-            documents=documents, 
-            metadatas=metadatas, 
-            ids=ids)
-        print(f"통합 의도 {len(rows)}건 임베딩 완료")
+            documents=documents,
+            metadatas=metadatas,
+            ids=ids
+        )
+        print(f"[임베딩 완료] 의도 {len(rows)}건 → 문서 {len(ids)}건(뷰 3배) 추가")
+    
+    def find_best_intent(
+        self,
+        query: str,
+        top_k: int = 30,
+        metric: str = "cosine",
+        threshold: float = DEFAULT_THRESHOLD,
+    ) -> Dict[str, Any]:
+        """
+        1) 문서 단위 검색(뷰 섞임)
+        2) 뷰 가중치 적용
+        3) intent 단위로 집계 (max + bonus*(sum-max))
+        4) 최종 intent 1개(또는 상위 N개) 반환
+        """
+        if not self.unified_collection:
+            return {"ok": False, "message": "unified_collection not initialized"}
+        if not query:
+            return {"ok": False, "message": "empty query"}
+
+        res = self.unified_collection.query(
+            query_texts=[query],
+            n_results=top_k,
+            include=["distances", "metadatas", "documents"],
+        )
+
+        distances = (res.get("distances") or [[]])[0]
+        metadatas = (res.get("metadatas") or [[]])[0]
+        ids = (res.get("ids") or [[]])[0]
+        documents = (res.get("documents") or [[]])[0]
+
+        if not metadatas:
+            return {"ok": False, "message": "no hits"}
+
+        # 1) 문서 점수 계산(거리→유사도), 뷰 가중치 적용
+        scored_docs: List[Dict[str, Any]] = []
+        for d, m, i, doc in zip(distances, metadatas, ids, documents):
+            if m.get("type") != "intent":
+                continue
+            view = m.get("view", "HELP")
+            base_sim = _to_similarity(d, metric=metric)
+            weight = VIEW_WEIGHT.get(view, 0.5)
+            sim = base_sim * weight
+            scored_docs.append({
+                "id": i,
+                "intent": m.get("intent", ""),
+                "function_key": m.get("function_key", ""),
+                "view": view,
+                "base_sim": base_sim,
+                "weight": weight,
+                "sim": sim,
+                "doc": doc,
+            })
+
+        if not scored_docs:
+            return {"ok": False, "message": "no intent-type hits"}
+
+        # 2) intent 단위로 집계
+        agg = defaultdict(lambda: {
+            "score_max": 0.0,
+            "score_sum": 0.0,
+            "hits": 0,
+            "function_key": None,
+            "views": set(),
+            "samples": [],
+        })
+
+        for s in scored_docs:
+            key = (s["intent"], s["function_key"])
+            bucket = agg[key]
+            bucket["score_max"] = max(bucket["score_max"], s["sim"])
+            bucket["score_sum"] += s["sim"]
+            bucket["hits"] += 1
+            bucket["function_key"] = s["function_key"]
+            if s["view"]:
+                bucket["views"].add(s["view"])
+            if len(bucket["samples"]) < 3:
+                bucket["samples"].append(s)
+
+        # 3) 최종 스코어 계산: max + bonus*(sum-max)
+        finals: List[Dict[str, Any]] = []
+        for (intent, fkey), v in agg.items():
+            score_max = v["score_max"]
+            score_sum = v["score_sum"]
+            final_score = score_max + FUSION_BONUS * max(0.0, (score_sum - score_max))
+            finals.append({
+                "intent": intent,
+                "function_key": fkey,
+                "score": final_score,
+                "views": sorted(v["views"]),
+                "hits": v["hits"],
+                "samples": v["samples"],
+            })
+
+        finals.sort(key=lambda x: x["score"], reverse=True)
+        top = finals[0] if finals else None
+        if not top:
+            return {"ok": False, "message": "no intent candidate"}
+
+        status = "ok" if top["score"] >= threshold else "low_confidence"
+
+        return {
+            "ok": True,
+            "status": status,
+            "query": query,
+            "top_intent": {
+                "intent": top["intent"],
+                "function_key": top["function_key"],
+                "score": round(top["score"], 4),
+            },
+            "candidates": [
+                {
+                    "intent": c["intent"],
+                    "function_key": c["function_key"],
+                    "score": round(c["score"], 4),
+                    "views": c["views"],
+                }
+                for c in finals[:5]
+            ],
+            "debug": {
+                "threshold": threshold,
+                "view_weight": VIEW_WEIGHT,
+                "fusion_bonus": FUSION_BONUS,
+                "top_samples": [
+                    {
+                        "view": s["view"],
+                        "sim": round(s["sim"], 4),
+                        "base_sim": round(s["base_sim"], 4),
+                        "id": s["id"],
+                    }
+                    for s in (top.get("samples") or [])
+                ],
+            },
+        }
 
     
     def search_intent(self, query: str, n_results: int = 5) -> List[Dict[str, Any]]:
-        """사용자 입력에 대해 가장 유사한 intent를 검색합니다."""
-        if not self.unified_collection:
-            print("unified_collection이 초기화되지 않았습니다.")
+        """
+        기존 시그니처 유지용 래퍼.
+        내부적으로 late fusion을 사용해 최상위 intent 1개 + 후보 반환 형식을 맞춘다.
+        """
+        res = self.find_best_intent(query=query, top_k=max(30, n_results * 6))
+        if not res.get("ok"):
             return []
-            
-        try:
-            results = self.unified_collection.query(
-                query_texts=[query],
-                n_results=max(n_results*3, n_results),
-                include=['metadatas', 'distances']
-            )
-            
-            pairs = [
-                {"metadata": m, "distance": d, "similarity": 1.0 - float(d)}
-                for m, d in zip(results['metadatas'][0], results['distances'][0])
-                if m.get("type") == "intent"  # 통합에서 intent만 남기기
-            ]
-            return [p for p in pairs if p["similarity"] >= 0.0][:n_results]
-        
-        except Exception as e:
-            print(f"검색 중 오류 발생: {e}")
-            return []
+
+        # 구 형식과 호환되는 간단 리스트로 축약 (원하면 그대로 res 반환해도 됨)
+        out = []
+        if res.get("top_intent"):
+            ti = res["top_intent"]
+            out.append({
+                "metadata": {
+                    "type": "intent",
+                    "intent": ti["intent"],
+                    "function_key": ti["function_key"],
+                },
+                "similarity": ti["score"],
+            })
+        # 후보 추가
+        for c in (res.get("candidates") or [])[1:n_results]:
+            out.append({
+                "metadata": {
+                    "type": "intent",
+                    "intent": c["intent"],
+                    "function_key": c["function_key"],
+                },
+                "similarity": c["score"],
+            })
+        return out
     
     def search_by_collection(self, query: str, collection_name: str = "intents", n_results: int = 5):
         """특정 컬렉션에서 검색합니다."""
@@ -486,11 +535,6 @@ class ChromaDBEmbedding:
     def embed_all_data(self):
         """모든 테이블의 데이터를 임베딩합니다."""
         print("데이터 임베딩을 시작합니다...")
-        
-        # self.load_and_embed_intents()
-        # self.load_and_embed_functions()
-        # self.load_and_embed_help_contents()
-        # self.create_unified_collection()
         self.load_and_embed_unified_intents()
         print("모든 데이터 임베딩이 완료되었습니다.")
 
