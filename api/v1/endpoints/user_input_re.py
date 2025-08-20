@@ -1,3 +1,6 @@
+# api/v1/endpoints/user_input_re.py
+from __future__ import annotations
+
 from typing import Dict, Any, Optional, List
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -6,16 +9,15 @@ from services.guide_service import generate_guide_response
 from services.intent_service import extract_intent_with_rag, db_get_function_info, search_similar_intents
 from services.validator_service import validate, validator_service, validate_text_parameters
 from services.executor_service import plan_action
-from services import interaction_store  # 새로 추가
+from services import interaction_store
 from services.param_extractor import extract_params_llm
+from services import table_access  # ← 추가: script_command/shortcut 폴백 조회
 
 from schemas.intent import UserRequest, MethodName
-from schemas.intent import IntentResponse  # 확장 IntentResponse (앞서 정의했던 버전)
-
+from schemas.intent import IntentResponse  # 확장 IntentResponse
 
 router = APIRouter()
-SIM_THRESHOLD = 0.3
-# 임베딩 수정 후 THRESHOLD 수정 필요
+SIM_THRESHOLD = 0.3  # 임베딩 수정 후 재조정 권장
 
 
 # --- 새 요청 스키마 ---
@@ -34,14 +36,10 @@ class ConfirmRequest(BaseModel):
 @router.post("/", response_model=IntentResponse)
 async def handle_user_input(request: UserRequest):
     # 1) RAG로 intent 추출
-    # TODO : intent 임시로
     intent_result = await extract_intent_with_rag(request.text)
     intent = (intent_result.get("intent") or "").strip()
     similarity = float(intent_result.get("similarity", 0.0))
     method_used = intent_result.get("method", "unknown")
-    # intent = "rename_file"
-    # similarity = 0.85
-    # method_used = "rag"
 
     if not intent:
         alts = await search_similar_intents(request.text, n_results=5)
@@ -70,20 +68,37 @@ async def handle_user_input(request: UserRequest):
         )
 
     # 2) 함수 메타
-    fn = db_get_function_info(intent)  # 반드시 function_key를 포함하도록 구현 권장
+    fn = db_get_function_info(intent) or {}
     function_key = (fn.get("function_key") or "").strip()
     shortcut = fn.get("shortcut") or ""
-    # TODO : shortcut 임시로
-    if not function_key:
-        # fallback: validator에서 조회(내부조인)
+    script_command = fn.get("script_command")  # ← 가이드 리스크/고급 섹션에 활용
+
+    # 폴백: table_access에서 보완 정보 조회
+    if not script_command or not shortcut:
         try:
-            function_key = validator_service._get_function_key_from_intent(intent)  # 내부함수이지만 실용적 폴백
+            row = table_access.get_function_by_key(function_key or intent)
+            if row:
+                script_command = script_command or row.get("script_command")
+                shortcut = shortcut or (row.get("shortcut") or "")
+        except Exception:
+            pass
+
+    # function_key 누락 시 폴백(가능하면 공개 API로 대체 권장)
+    if not function_key:
+        try:
+            function_key = validator_service._get_function_key_from_intent(intent)
         except Exception:
             function_key = ""
 
     # 3) GUIDE
     if request.method == MethodName.GUIDE:
-        guide = await generate_guide_response(request.text, intent, shortcut)
+        guide = await generate_guide_response(
+            request.text,
+            intent,
+            shortcut,
+            script_command,     # ← 추가
+            show_commands=False # ← 기본은 초보자 모드
+        )
         return IntentResponse(
             intent=intent,
             method=request.method,
@@ -96,20 +111,6 @@ async def handle_user_input(request: UserRequest):
         )
 
     # 4) EXECUTION/SIMULATION (초판 검증)
-    #    - 첫 호출에서 모든 정보를 받았을 수도 있음
-    # 스키마 : 각 기능 실행에 필요한 파라미터의 설계도
-    # ex) copy_file
-    # {
-    # "required":[
-    #     {"name":"src_path","type":"path"},
-    #     {"name":"dst_path","type":"path"}
-    # ],
-    # "optional":[],
-    # "danger": false
-    # }
-    # parameters = validate_text_parameters(intent, request.text)
-    # v = validate(intent, parameters or {}, method=str(request.method), text=request.text)
-    # schema = validator_service.get_function_params(intent)  # 파라미터 스키마(가이드용)
     schema = validator_service.get_intent_params(intent)
 
     # function 매핑 누락
@@ -121,18 +122,16 @@ async def handle_user_input(request: UserRequest):
             status="no_intent",
             message="구성되지 않은 의도입니다. 관리자에게 기능 매핑을 요청하세요.",
             similarity=similarity,
-            method_used=method_used   
+            method_used=method_used
         )
-    
-    v = None
+
     if request.method == MethodName.EXECUTION:
-        # 텍스트 추정값 + 클라이언트 파라미터 병합(선택),
-        # validate 내부에서도 텍스트 재추정/머지하므로 안전함
+        # 텍스트 추정값 + 규칙 기반 병합
         pre_params = extract_params_llm(intent, request.text, schema) or {}
         rb_params = validate_text_parameters(intent, request.text) or {}
         for k, v_ in rb_params.items():
             pre_params.setdefault(k, v_)
-        v = validate(intent, pre_params, method=MethodName.EXECUTION, text=request.text) 
+        v = validate(intent, pre_params, method=MethodName.EXECUTION, text=request.text)
     else:
         return IntentResponse(
             intent=intent,
@@ -143,7 +142,7 @@ async def handle_user_input(request: UserRequest):
             similarity=similarity,
             method_used=method_used,
         )
-    
+
     # 부족 → 세션 생성 + info_required
     if not v["valid"]:
         iid = interaction_store.create(
@@ -198,8 +197,8 @@ async def handle_user_input(request: UserRequest):
 
     # 실행
     params = v.get("normalized_params", {})
-    plan = await plan_action(function_key or intent, params)
-    
+    plan = await plan_action(function_key or intent, params, shortcut=shortcut)  # ← shortcut 전달
+
     if not plan.get("ok"):
         return IntentResponse(
             intent=intent,
@@ -211,18 +210,19 @@ async def handle_user_input(request: UserRequest):
             similarity=similarity,
             method_used=method_used
         )
-        
+
     return IntentResponse(
         intent=intent,
         method=request.method,
         parameters=params,
         status="ready_to_execute",
         message=plan.get("message"),
-        shortcut=shortcut,
+        shortcut=plan.get("shortcut") or shortcut,
         similarity=similarity,
         method_used=method_used,
-        exec=plan.get("exec") 
+        exec=plan.get("exec")
     )
+
 
 # -------------------- 후속 요청: 파라미터 보강 --------------------
 @router.post("/continue", response_model=IntentResponse)
@@ -234,6 +234,7 @@ async def continue_intent(req: ContinueRequest):
     intent = st["intent"]
     function_key = st["function_key"]
     shortcut = st["shortcut"]
+
     # 누적 파라미터 병합
     merged = dict(st.get("normalized_params", {}))
     merged.update(req.parameters or {})
@@ -285,10 +286,10 @@ async def continue_intent(req: ContinueRequest):
 
     # 실행
     params = v.get("normalized_params", {})
-    plan = await plan_action(function_key or intent, params)
-    
+    plan = await plan_action(function_key or intent, params, shortcut=shortcut)  # ← shortcut 전달
+
     interaction_store.delete(req.interaction_id)
-    
+
     if not plan.get("ok"):
         return IntentResponse(
             intent=intent,
@@ -300,18 +301,17 @@ async def continue_intent(req: ContinueRequest):
             similarity=st["similarity"],
             method_used=st["method_used"],
         )
-        
+
     return IntentResponse(
         intent=intent,
         method=req.method,
         parameters=params,
         status="ready_to_execute",
         message="실행 계획 생성",
-        shortcut=shortcut,
-        interaction_id=req.interaction_id,
+        shortcut=plan.get("shortcut") or shortcut,
         similarity=st["similarity"],
         method_used=st["method_used"],
-        exec=plan.get("exec") 
+        exec=plan.get("exec")
     )
 
 
@@ -334,24 +334,23 @@ async def confirm_intent(req: ConfirmRequest):
         interaction_store.delete(req.interaction_id)
         return IntentResponse(
             intent=intent,
-            method=MethodName.EXECUTION,
+            method=MethodName.EXECUTION,  # ← 고정 (ConfirmRequest엔 method 없음)
             parameters=params,
             status="cancelled",
             message="사용자 취소로 실행하지 않았습니다.",
-            interaction_id=req.interaction_id,
             similarity=st["similarity"],
             method_used=st["method_used"],
             shortcut=shortcut,
         )
 
     # 승인 → 실행
-    plan = await plan_action(function_key or intent, params)
+    plan = await plan_action(function_key or intent, params, shortcut=shortcut)  # ← shortcut 전달
     interaction_store.delete(req.interaction_id)
-    
+
     if not plan.get("ok"):
         return IntentResponse(
             intent=intent,
-            method=req.method,
+            method=MethodName.EXECUTION,  # ← 버그 픽스: req.method 사용 금지
             parameters=params,
             status="error",
             message=plan.get("message", "실행 계획 생성 실패"),
@@ -359,16 +358,15 @@ async def confirm_intent(req: ConfirmRequest):
             similarity=st["similarity"],
             method_used=st["method_used"],
         )
-        
+
     return IntentResponse(
         intent=intent,
         method=MethodName.EXECUTION,
         parameters=params,
         status="ready_to_execute",
         message="실행 계획 생성",
-        shortcut=shortcut,
-        interaction_id=req.interaction_id,
+        shortcut=plan.get("shortcut") or shortcut,
         similarity=st["similarity"],
         method_used=st["method_used"],
-        exec=plan.get("exec") 
+        exec=plan.get("exec")
     )
