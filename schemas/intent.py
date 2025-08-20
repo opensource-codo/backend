@@ -26,7 +26,7 @@ class IntentStatus(str, Enum):
     confirm_required = "confirm_required"
     no_intent = "no_intent"
     unknown_method = "unknown_method",
-    ready_to_execute = "ready_to_excute",
+    ready_to_execute = "ready_to_execute",
     cancelled = "cancelled",
     error = "error"
 
@@ -42,8 +42,7 @@ class ParamSpec(BaseModel):
 class ParameterSchema(BaseModel):
     required: List[ParamSpec] = Field(default_factory=list)
     optional: List[ParamSpec] = Field(default_factory=list)
-
-
+    
 class IntentResponse(BaseModel):
     intent: str
     method: "MethodName"  # 또는 위 주석의 Enum 사용
@@ -59,7 +58,7 @@ class IntentResponse(BaseModel):
     similarity: Optional[float] = None
     method_used: Optional[Literal["rag", "llm"]] = None
     shortcut: Optional[str] = None
-    exec: Optional[str] = None
+    exec: Optional[Dict[str, Any]] = None
     
 
 class ValidationResponse(BaseModel):
