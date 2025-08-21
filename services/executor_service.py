@@ -43,12 +43,18 @@ DEFAULT_TIMEOUT_MS = 15000
 FORBIDDEN_TOKENS = {"&&", "||", "|", ";", "`", "$(", "<(", ">", ">>"}
 
 DANGEROUS_PATTERNS = [
-    r"\bClear-RecycleBin\b", r"\bRemove-Item\b", r"\brm\s+-rf\b",
-    r"\bFormat-Volume\b", r"\bmkfs\b",
+    r"\bClear-RecycleBin\b",
+    r"\bRemove-Item\b",
+    r"\brm\s+-rf\b",
+    r"\bFormat-Volume\b",
+    r"\bmkfs\b",
+    r"\bshutdown\b",
 ]
 CAUTION_PATTERNS = [
-    r"\bchkdsk\b", r"\bDISM\b", r"\bsfc\s+/scannow\b",
-    r"\bRestart-Service\b"
+    r"\bchkdsk\b",
+    r"\bDISM\b",
+    r"\bsfc\s+/scannow\b",
+    r"\bRestart-Service\b",
 ]
 
 def _classify_risk(command: Optional[str]) -> str:
@@ -79,19 +85,17 @@ def _new_exec_base(name: str,
         d["requiresConfirmation"] = bool(requires_confirmation)
     return d
 
-# ── 키 정규화(핫키용) ────────────────────────────────────────
-_KEY_NORMALIZE_MAP = {
-    "control": "ctrl", "ctrl": "ctrl",
-    "shift": "shift", "alt": "alt", "option": "alt",
-    "cmd": "meta", "command": "meta", "meta": "meta", "win": "meta", "super": "meta",
-    "enter": "enter", "return": "enter",
-    "esc": "escape", "escape": "escape",
-    "del": "delete", "delete": "delete",
-    "bksp": "backspace", "backspace": "backspace",
-    "space": "space", "tab": "tab",
-}
-
 def _normalize_key(k: str) -> str:
+    _KEY_NORMALIZE_MAP = {
+        "control": "ctrl", "ctrl": "ctrl",
+        "shift": "shift", "alt": "alt", "option": "alt",
+        "cmd": "meta", "command": "meta", "meta": "meta", "win": "meta", "super": "meta",
+        "enter": "enter", "return": "enter",
+        "esc": "escape", "escape": "escape",
+        "del": "delete", "delete": "delete",
+        "bksp": "backspace", "backspace": "backspace",
+        "space": "space", "tab": "tab",
+    }
     s = (k or "").strip().lower()
     return _KEY_NORMALIZE_MAP.get(s, s)
 
@@ -109,6 +113,29 @@ def _sanitize_params(params: Dict[str, Any]) -> Dict[str, Any]:
 
 def _render_safe(cmd_tpl: str, context: Dict[str, Any]) -> str:
     return Template(cmd_tpl).render(**context)
+
+def _ps_quote(s: str) -> str:
+    """PowerShell용 작은따옴표 이스케이프."""
+    s = str(s).replace("'", "''")
+    return f"'{s}'"
+
+def _make_shell_exec(name: str, cmd: str, shortcut: Optional[str] = None) -> PlanResult:
+    risk = _classify_risk(cmd)
+    need_confirm = (risk in ("caution", "danger"))
+    exec_plan = {
+        **_new_exec_base(
+            name=name,
+            preview=f"{DEFAULT_SHELL} → {cmd}",
+            requires_confirmation=need_confirm,
+            timeout_ms=60000 if need_confirm else DEFAULT_TIMEOUT_MS,
+        ),
+        "kind": "shell",
+        "payload": {
+            "shell": DEFAULT_SHELL,
+            "command": cmd,
+        },
+    }
+    return PlanResult(ok=True, message="실행 계획 생성", shortcut=shortcut, exec=exec_plan)
 
 # ─────────────────────────────────────────────────────────────
 # DB 기반 제너릭 플래너
@@ -145,7 +172,7 @@ class GenericScriptPlanner(ActionPlanner):
         else:
             return PlanResult(ok=False, message="실행 가능한 스크립트 정보가 없습니다.")
 
-        # 위험도 판정 → exec.requiresConfirmation 플래그
+        # preview는 "<shell> → <command>"
         risk = _classify_risk(cmd)
         need_confirm = (risk in ("caution", "danger"))
 
@@ -154,26 +181,80 @@ class GenericScriptPlanner(ActionPlanner):
                 name="generic_script",
                 preview=f"{self.shell} → {cmd}",
                 requires_confirmation=need_confirm,
-                timeout_ms=60000 if need_confirm else DEFAULT_TIMEOUT_MS
+                timeout_ms=60000 if need_confirm else DEFAULT_TIMEOUT_MS,
             ),
             "kind": "shell",
             "payload": {
-                "shell": self.shell,          # "powershell" 권장
+                "shell": self.shell,
                 "command": cmd,
-                **({"cwd": self.cwd} if self.cwd else {})
-            }
+                **({"cwd": self.cwd} if self.cwd else {}),
+            },
         }
-
-        return PlanResult(
-            ok=True,
-            message="스크립트 실행 계획 생성",
-            shortcut=self.shortcut,
-            exec=exec_plan
-        )
+        return PlanResult(ok=True, message="스크립트 실행 계획 생성", shortcut=self.shortcut, exec=exec_plan)
 
 # ─────────────────────────────────────────────────────────────
-# 예시: 커스텀 플래너(핫키)
+# 빌트인 커스텀 플래너들
 # ─────────────────────────────────────────────────────────────
+@register("create_folder")
+class CreateFolderPlanner(ActionPlanner):
+    async def plan(self, params: Dict[str, Any]) -> PlanResult:
+        p = _sanitize_params(params)
+        path = p.get("path")
+        name = p.get("name")
+        if not path or not name:
+            return PlanResult(ok=False, message="필수 파라미터 누락: path, name")
+        cmd = f"New-Item -ItemType Directory -Path {_ps_quote(path)} -Name {_ps_quote(name)} -Force"
+        return _make_shell_exec("create_folder", cmd)
+
+@register("copy_file")
+class CopyFilePlanner(ActionPlanner):
+    async def plan(self, params: Dict[str, Any]) -> PlanResult:
+        p = _sanitize_params(params)
+        src = p.get("src_path")
+        dst = p.get("dst_path")
+        if not src or not dst:
+            return PlanResult(ok=False, message="필수 파라미터 누락: src_path, dst_path")
+        cmd = f"Copy-Item -Path {_ps_quote(src)} -Destination {_ps_quote(dst)} -Force"
+        return _make_shell_exec("copy_file", cmd)
+
+@register("move_file")
+class MoveFilePlanner(ActionPlanner):
+    async def plan(self, params: Dict[str, Any]) -> PlanResult:
+        p = _sanitize_params(params)
+        src = p.get("src_path")
+        dst = p.get("dst_path")
+        if not src or not dst:
+            return PlanResult(ok=False, message="필수 파라미터 누락: src_path, dst_path")
+        cmd = f"Move-Item -Path {_ps_quote(src)} -Destination {_ps_quote(dst)} -Force"
+        return _make_shell_exec("move_file", cmd)
+
+@register("rename_file")
+class RenameFilePlanner(ActionPlanner):
+    async def plan(self, params: Dict[str, Any]) -> PlanResult:
+        p = _sanitize_params(params)
+        old_path = p.get("old_path")
+        new_path = p.get("new_path")
+        new_name = p.get("new_name") or (os.path.basename(str(new_path)) if new_path else None)
+        if not old_path or not new_name:
+            return PlanResult(ok=False, message="필수 파라미터 누락: old_path, new_name(또는 new_path)")
+        cmd = f"Rename-Item -Path {_ps_quote(old_path)} -NewName {_ps_quote(new_name)} -Force"
+        return _make_shell_exec("rename_file", cmd)
+
+@register("empty_recycle_bin")
+class EmptyRecycleBinPlanner(ActionPlanner):
+    async def plan(self, params: Dict[str, Any]) -> PlanResult:
+        cmd = "Clear-RecycleBin -Force"
+        # 위험 분류에 의해 requiresConfirmation 자동 True
+        return _make_shell_exec("empty_recycle_bin", cmd)
+
+@register("shutdown")
+class ShutdownPlanner(ActionPlanner):
+    async def plan(self, params: Dict[str, Any]) -> PlanResult:
+        cmd = "shutdown /r /t 0"
+        # 위험 분류에 의해 requiresConfirmation 자동 True
+        return _make_shell_exec("shutdown", cmd)
+
+# (예시) 커스텀 플래너: 핫키
 @register("paste")
 class PastePlanner(ActionPlanner):
     async def plan(self, params: Dict[str, Any]) -> PlanResult:
@@ -204,11 +285,22 @@ async def plan_action(function_key: str, parameters: Dict[str, Any], shortcut: O
     2) 없으면 DB(functions) 조회 → GenericScriptPlanner 사용
     3) 둘 다 없으면 오류
     """
-    planner = _HANDLER_REGISTRY.get(function_key)
+    planner = _HANDLER_REGISTRY.get((function_key or "").strip().lower())
 
     if planner is None:
-        from .table_access import get_function_by_key
-        row = get_function_by_key(function_key)
+        # DB 폴백
+        try:
+            from .table_access import get_function_by_key
+        except Exception:
+            get_function_by_key = None
+
+        row = None
+        if get_function_by_key:
+            try:
+                row = get_function_by_key((function_key or "").strip().lower())
+            except Exception:
+                row = None
+
         if row and (row.get("script_path") or row.get("script_command")):
             planner = GenericScriptPlanner(
                 script_path=row.get("script_path") or "",
@@ -221,4 +313,9 @@ async def plan_action(function_key: str, parameters: Dict[str, Any], shortcut: O
             return {"ok": False, "message": f"플래너 없음: {function_key}"}
 
     res: PlanResult = await planner.plan(parameters or {})
-    return {"ok": res.ok, "message": res.message, "shortcut": res.shortcut or shortcut, "exec": res.exec}
+    return {
+        "ok": res.ok,
+        "message": res.message,
+        "shortcut": res.shortcut or shortcut,
+        "exec": res.exec,
+    }

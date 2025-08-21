@@ -17,7 +17,7 @@ from schemas.intent import UserRequest, MethodName
 from schemas.intent import IntentResponse  # 확장 IntentResponse
 
 router = APIRouter()
-SIM_THRESHOLD = 0.3  # 임베딩 수정 후 재조정 권장
+SIM_THRESHOLD = 0.2 # 임베딩 수정 후 재조정 권장
 
 
 # --- 새 요청 스키마 ---
