@@ -38,7 +38,7 @@ SCRIPTS_MAP = {
     "밝기 높이기": "adjust_brightness_up.py",#
     "밝기 줄이기": "adjust_brightness_down.py",
     "윈도우 업데이트 확인": "check_update.py",
-    "브라우저 정리": "clear_browser_data.py",#check
+    "브라우저 정리": "clear_browser_data.py",#
     "작업 관리자 열기": "open_taskmgr.py",
     "화면 캡처하기": "screenshot.py",
     "화면 잠금": "lock_screen.py",
@@ -47,10 +47,11 @@ SCRIPTS_MAP = {
     "휴지통 비우기": "empty_recycle_bin.py",
     "화면 확대": "zoom_in.py",
     "화면 축소": "zoom_out.py",
-    "파일 찾기": "search_file.py",
+    "파일 찾기": "search_file.py",#그냥 단축키임.
     "메모장 열기": "open_notepad.py",
     "설정 열기": "open_settings.py",
-    "파일 복사": "file_copy_paste.py",
+    "파일 복사": "file_copy.py",
+    "파일 붙여넣기": "file_paste.py",
     "파일 잘라내기": "file_cut.py",
     "파일 삭제": "file_delete.py",
 }
