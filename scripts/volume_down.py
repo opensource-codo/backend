@@ -12,7 +12,7 @@ volume = cast(interface, POINTER(IAudioEndpointVolume)) # COM 인터페이스를
 volume.SetMute(0, None) #뮤트 상태 제거 0:음소거 해제 1:음소거
 
 # 볼륨 10칸 내리기
-for _ in range(steps):
+for _ in range(10):
     volume.SetMasterVolumeLevelScalar(max(volume.GetMasterVolumeLevelScalar() - 0.01, 0.0), None)
 # volume.GetMasterVolumeLevelScalar() : 현재 볼륨 값을 0.0 ~ 1.0 사이 실수 값으로 반환. 
 # 0.0이 최소소. 0.01씩 감소시킴.
