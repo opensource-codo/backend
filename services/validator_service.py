@@ -62,10 +62,10 @@ class ValidatorService:
     # ───────────────────────────────────────────────
     def _get_schema_from_db(self, function_key: str) -> Dict[str, Any]:
         """
-        intent_params에서 function_key의 파라미터 스키마를 읽는다.
+        intent_param에서 function_key의 파라미터 스키마를 읽는다.
         없으면 {} 반환.
         """
-        if not function_key or not self._table_exists("intent_params"):
+        if not function_key or not self._table_exists("intent_param"):
             return {}
 
         conn = self.get_db_connection()
@@ -73,9 +73,9 @@ class ValidatorService:
             # TODO : required DB 구조 보고 수정 필요
             cur = conn.execute(
                 """
-                SELECT name, type, required, default_json, choices_json, description
-                FROM intent_params
-                WHERE function_key = ?
+                SELECT param_name, param_type, required, default_json, choices_json, description
+                FROM intent_param
+                WHERE function_id = ?
                 ORDER BY required DESC, name ASC
                 """,
                 (function_key,),
@@ -159,7 +159,7 @@ class ValidatorService:
                 """
                 SELECT f.function_key AS fk
                 FROM intents i
-                LEFT JOIN functions f ON i.function_id = f.id   -- ✅ 올바른 조인
+                LEFT JOIN functions f ON i.function_id = f.id   
                 WHERE i.intent = ?
                 """,
                 (intent,),
