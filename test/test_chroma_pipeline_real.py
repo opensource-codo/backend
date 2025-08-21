@@ -175,4 +175,4 @@ if __name__ == "__main__":
         sys.exit(1)
     
     print("Running Chroma pipeline test with real OpenAI embeddings...")
-    # pytest.main([__file__, "-s", "-v"])
+    pytest.main([__file__, "-s", "-v"])
