@@ -11,7 +11,9 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
-        "http://localhost:3001"
+        "http://localhost:3001",
+        "http://127.0.0.1:3000"
+
     ],  # 프론트엔드 포트에 맞게 조정
     allow_credentials=True,
     allow_methods=["*"],  # GET, POST, OPTIONS 등 모두 허용
