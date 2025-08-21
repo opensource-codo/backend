@@ -1,4 +1,3 @@
-# validator_service.py
 from typing import Dict, Any, List, Optional, Tuple
 import sqlite3
 import re
@@ -28,6 +27,12 @@ _ALIAS_MAP = {
     "empty_recycle_bin": "empty_recycle_bin",
     "휴지통 비우기": "empty_recycle_bin",
     "shutdown": "shutdown",
+
+    # 추가: 제어판 열기
+    "open_control_panel": "open_control_panel",
+    "제어판 열기": "open_control_panel",
+    "control panel": "open_control_panel",
+    "control": "open_control_panel",
 }
 
 
@@ -62,10 +67,10 @@ class ValidatorService:
     # ───────────────────────────────────────────────
     def _get_schema_from_db(self, function_key: str) -> Dict[str, Any]:
         """
-        intent_param에서 function_key의 파라미터 스키마를 읽는다.
+        intent_params에서 function_key의 파라미터 스키마를 읽는다.
         없으면 {} 반환.
         """
-        if not function_key or not self._table_exists("intent_param"):
+        if not function_key or not self._table_exists("intent_params"):
             return {}
 
         conn = self.get_db_connection()
@@ -273,16 +278,31 @@ class ValidatorService:
                 "optional": [],
                 "danger": True,  # 확인 필요
             },
+
+            # 추가: 제어판 열기
+            "open_control_panel": {
+                "required": [],
+                "optional": [],
+                "danger": False,
+            },
         }
 
     # ───────────────────────────────────────────────
     # 검증 메인
     # ───────────────────────────────────────────────
-    def validate(self, intent: str, parameters: Dict[str, Any], text: str = "", method = "EXECUTION") -> Dict[str, Any]:
+    def validate(
+        self,
+        intent: str,
+        parameters: Dict[str, Any],
+        text: str = "",
+        method: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         intent와 파라미터를 검증합니다.
+        method가 주어지지 않으면 EXECUTION으로 간주합니다.
         """
-        
+        method_upper = (method or "EXECUTION").upper()
+
         # 스키마 로딩
         schema = self.get_intent_params(intent)
         if schema.get("not_configured"):
@@ -304,7 +324,7 @@ class ValidatorService:
         # 스키마 검증/정규화
         normalized, missing, errors = self._apply_schema(merged_params, schema)
 
-        if method == "EXECUTION":
+        if method_upper == "EXECUTION":
             if missing or errors:
                 parts = []
                 if missing:
@@ -338,12 +358,23 @@ class ValidatorService:
                 "message": "실행 모드: 모든 파라미터가 준비되었습니다.",
             }
 
+        if method_upper == "GUIDE":
+            # GUIDE 모드는 검증이 핵심이 아니므로 OK로 간주(실행은 아님)
+            return {
+                "valid": True,
+                "missing_params": [],
+                "normalized_params": {},
+                "errors": [],
+                "requires_confirmation": False,
+                "message": "가이드 모드: 검증을 수행하지 않습니다.",
+            }
+
         # 알 수 없는 method
         return {
             "valid": False,
             "missing_params": [],
             "normalized_params": {},
-            "errors": [f"지원하지 않는 method: {method}"],
+            "errors": [f"지원하지 않는 method: {method_upper}"],
             "requires_confirmation": False,
             "message": "잘못된 실행 방법입니다.",
         }
@@ -406,6 +437,7 @@ class ValidatorService:
             elif any(k in text_lower for k in ["해제", "off", "disable", "끄"]):
                 extracted["enabled"] = False
 
+        # open_control_panel은 파라미터 없음
         return extracted
 
     def _get_function_key_from_intent(self, intent: str) -> Optional[str]:
@@ -562,9 +594,14 @@ def validate_text_parameters(intent: str, text: str) -> Dict[str, Any]:
         return {}
 
 # 기존 코드와의 호환성을 위한 함수
-def validate(intent: str, parameters: Dict[str, Any], text: str = "") -> Dict[str, Any]:
+def validate(
+    intent: str,
+    parameters: Dict[str, Any],
+    text: str = "",
+    method: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     기존 코드와의 호환성을 위한 함수입니다.
     validator_service.validate()를 호출합니다.
     """
-    return validator_service.validate(intent, parameters, text, method = "EXECUTION")
+    return validator_service.validate(intent, parameters, text, method)
