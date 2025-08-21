@@ -1,3 +1,6 @@
+# api/v1/endpoints/user_input_re.py
+from __future__ import annotations
+
 from typing import Dict, Any, Optional, List
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -6,16 +9,15 @@ from services.guide_service import generate_guide_response
 from services.intent_service import extract_intent_with_rag, db_get_function_info, search_similar_intents
 from services.validator_service import validate, validator_service, validate_text_parameters
 from services.executor_service import plan_action
-from services import interaction_store  # 새로 추가
+from services import interaction_store
 from services.param_extractor import extract_params_llm
+from services import table_access  # ← 추가: script_command/shortcut 폴백 조회
 
 from schemas.intent import UserRequest, MethodName
-from schemas.intent import IntentResponse  # 확장 IntentResponse (앞서 정의했던 버전)
-
+from schemas.intent import IntentResponse  # 확장 IntentResponse
 
 router = APIRouter()
-SIM_THRESHOLD = 0.3
-# 임베딩 수정 후 THRESHOLD 수정 필요
+SIM_THRESHOLD = 0.2 # 임베딩 수정 후 재조정 권장
 
 
 # --- 새 요청 스키마 ---
@@ -114,9 +116,7 @@ async def handle_user_input(request: UserRequest):
     # parameters = validate_text_parameters(intent, request.text)
     # v = validate(intent, parameters or {}, method=str(request.method), text=request.text)
     # schema = validator_service.get_function_params(intent)  # 파라미터 스키마(가이드용)
-    # schema = validator_service.get_intent_params(intent)
-    schema = validator_service.get_function_params(function_key)
-    # required, optional, danger
+    schema = validator_service.get_intent_params(intent)
 
     # function 매핑 누락
     if schema.get("not_configured"):
@@ -127,13 +127,11 @@ async def handle_user_input(request: UserRequest):
             status="no_intent",
             message="구성되지 않은 의도입니다. 관리자에게 기능 매핑을 요청하세요.",
             similarity=similarity,
-            method_used=method_used   
+            method_used=method_used
         )
-    
-    v = None
+
     if request.method == MethodName.EXECUTION:
-        # 텍스트 추정값 + 클라이언트 파라미터 병합(선택),
-        # validate 내부에서도 텍스트 재추정/머지하므로 안전함
+        # 텍스트 추정값 + 규칙 기반 병합
         pre_params = extract_params_llm(intent, request.text, schema) or {}
         v = validate(intent, pre_params, text=request.text) 
         
@@ -147,7 +145,7 @@ async def handle_user_input(request: UserRequest):
             similarity=similarity,
             method_used=method_used,
         )
-    
+
     # 부족 → 세션 생성 + info_required
     if not v["valid"]:
         iid = interaction_store.create(
@@ -203,8 +201,8 @@ async def handle_user_input(request: UserRequest):
     # 위험 작업이 아닌 경우에만 실행
     # 실행
     params = v.get("normalized_params", {})
-    plan = await plan_action(function_key or intent, params)
-    
+    plan = await plan_action(function_key or intent, params, shortcut=shortcut)  # ← shortcut 전달
+
     if not plan.get("ok"):
         return IntentResponse(
             intent=intent,
@@ -216,18 +214,19 @@ async def handle_user_input(request: UserRequest):
             similarity=similarity,
             method_used=method_used
         )
-        
+
     return IntentResponse(
         intent=intent,
         method=request.method,
         parameters=params,
         status="ready_to_execute",
         message=plan.get("message"),
-        shortcut=shortcut,
+        shortcut=plan.get("shortcut") or shortcut,
         similarity=similarity,
         method_used=method_used,
-        exec=plan.get("exec") 
+        exec=plan.get("exec")
     )
+
 
 # -------------------- 후속 요청: 파라미터 보강 --------------------
 @router.post("/continue", response_model=IntentResponse)
@@ -239,6 +238,7 @@ async def continue_intent(req: ContinueRequest):
     intent = st["intent"]
     function_key = st["function_key"]
     shortcut = st["shortcut"]
+
     # 누적 파라미터 병합
     merged = dict(st.get("normalized_params", {}))
     merged.update(req.parameters or {})
@@ -290,10 +290,10 @@ async def continue_intent(req: ContinueRequest):
 
     # 실행
     params = v.get("normalized_params", {})
-    plan = await plan_action(function_key or intent, params)
-    
+    plan = await plan_action(function_key or intent, params, shortcut=shortcut)  # ← shortcut 전달
+
     interaction_store.delete(req.interaction_id)
-    
+
     if not plan.get("ok"):
         return IntentResponse(
             intent=intent,
@@ -305,18 +305,17 @@ async def continue_intent(req: ContinueRequest):
             similarity=st["similarity"],
             method_used=st["method_used"],
         )
-        
+
     return IntentResponse(
         intent=intent,
         method=req.method,
         parameters=params,
         status="ready_to_execute",
         message="실행 계획 생성",
-        shortcut=shortcut,
-        interaction_id=req.interaction_id,
+        shortcut=plan.get("shortcut") or shortcut,
         similarity=st["similarity"],
         method_used=st["method_used"],
-        exec=plan.get("exec") 
+        exec=plan.get("exec")
     )
 
 
@@ -339,20 +338,19 @@ async def confirm_intent(req: ConfirmRequest):
         interaction_store.delete(req.interaction_id)
         return IntentResponse(
             intent=intent,
-            method=MethodName.EXECUTION,
+            method=MethodName.EXECUTION,  # ← 고정 (ConfirmRequest엔 method 없음)
             parameters=params,
             status="cancelled",
             message="사용자 취소로 실행하지 않았습니다.",
-            interaction_id=req.interaction_id,
             similarity=st["similarity"],
             method_used=st["method_used"],
             shortcut=shortcut,
         )
 
     # 승인 → 실행
-    plan = await plan_action(function_key or intent, params)
+    plan = await plan_action(function_key or intent, params, shortcut=shortcut)  # ← shortcut 전달
     interaction_store.delete(req.interaction_id)
-    
+
     if not plan.get("ok"):
         return IntentResponse(
             intent=intent,
@@ -364,16 +362,15 @@ async def confirm_intent(req: ConfirmRequest):
             similarity=st["similarity"],
             method_used=st["method_used"],
         )
-        
+
     return IntentResponse(
         intent=intent,
         method=MethodName.EXECUTION,
         parameters=params,
         status="ready_to_execute",
         message="실행 계획 생성",
-        shortcut=shortcut,
-        interaction_id=req.interaction_id,
+        shortcut=plan.get("shortcut") or shortcut,
         similarity=st["similarity"],
         method_used=st["method_used"],
-        exec=plan.get("exec") 
+        exec=plan.get("exec")
     )

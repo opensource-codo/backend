@@ -5,6 +5,31 @@ import re
 import os
 import json
 
+# ───────────────────────────────────────────────
+# 별칭 맵 (DB에 매핑이 없을 때 폴백)
+# ───────────────────────────────────────────────
+_ALIAS_MAP = {
+    # 폴더/파일 작업
+    "create_folder": "create_folder",
+    "mkdir": "create_folder",
+    "폴더 생성": "create_folder",
+    "디렉터리 생성": "create_folder",
+
+    "copy_file": "copy_file",
+    "파일 복사": "copy_file",
+
+    "move_file": "move_file",
+    "파일 이동": "move_file",
+
+    "rename_file": "rename_file",
+    "파일 이름 변경": "rename_file",
+
+    # 위험 작업
+    "empty_recycle_bin": "empty_recycle_bin",
+    "휴지통 비우기": "empty_recycle_bin",
+    "shutdown": "shutdown",
+}
+
 
 class ValidatorService:
     def __init__(self, db_path: str = "assistant.db"):
@@ -126,15 +151,15 @@ class ValidatorService:
         """
         intent 기준 스키마 조회.
         intent -> functions.function_key 조인 후, get_function_params로 조회.
-        매핑이 없으면 not_configured=True로 표시.
+        매핑이 없으면 별칭 폴백 → 그래도 없으면 not_configured=True.
         """
         conn = self.get_db_connection()
         try:
             cursor = conn.execute(
                 """
-                SELECT f.function_key
+                SELECT f.function_key AS fk
                 FROM intents i
-                LEFT JOIN functions f ON i.function_id = f.function_key
+                LEFT JOIN functions f ON i.function_id = f.id   -- ✅ 올바른 조인
                 WHERE i.intent = ?
                 """,
                 (intent,),
@@ -143,15 +168,32 @@ class ValidatorService:
         finally:
             conn.close()
 
-        if not row or not row["function_key"]:
-            # 의도는 있지만 기능 매핑이 안 된 구성 이슈
-            return {"required": [], "optional": [], "danger": False, "not_configured": True}
+        if row and row["fk"]:
+            return self.get_function_params(row["fk"])
 
-        return self.get_function_params(row["function_key"])
+        # DB에 없으면 별칭 폴백
+        fk = self._alias(intent)
+        if fk:
+            return self.get_function_params(fk)
+
+        # 의도는 있지만 기능 매핑이 안 된 구성 이슈
+        return {"required": [], "optional": [], "danger": False, "not_configured": True}
+
+    def _alias(self, intent: str) -> Optional[str]:
+        if not intent:
+            return None
+        s = intent.strip().lower()
+        if s in _ALIAS_MAP:
+            return _ALIAS_MAP[s]
+        for k, v in _ALIAS_MAP.items():
+            if k in s:
+                return v
+        return None
 
     def _get_default_param_schemas(self) -> Dict[str, Dict[str, Any]]:
         """하드코딩 기본 스키마(폴백용)."""
         return {
+            # 기존 제공 스키마
             "copy_file": {
                 "required": [
                     {"name": "src_path", "type": "path", "description": "복사할 파일 경로"},
@@ -203,6 +245,34 @@ class ValidatorService:
                 "optional": [],
                 "danger": True,
             },
+
+            # 폴백 추가 스키마
+            "create_folder": {
+                "required": [
+                    {"name": "path", "type": "path", "description": "부모 경로"},
+                    {"name": "name", "type": "str",  "description": "새 폴더 이름"},
+                ],
+                "optional": [],
+                "danger": False,
+            },
+            "move_file": {
+                "required": [
+                    {"name": "src_path", "type": "path", "description": "원본 경로"},
+                    {"name": "dst_path", "type": "path", "description": "대상 경로"},
+                ],
+                "optional": [],
+                "danger": False,
+            },
+            "empty_recycle_bin": {
+                "required": [],
+                "optional": [],
+                "danger": True,  # 확인 필요
+            },
+            "shutdown": {
+                "required": [],
+                "optional": [],
+                "danger": True,  # 확인 필요
+            },
         }
 
     # ───────────────────────────────────────────────
@@ -234,28 +304,48 @@ class ValidatorService:
         # 스키마 검증/정규화
         normalized, missing, errors = self._apply_schema(merged_params, schema)
 
-        if missing or errors:
-            parts = []
-            if missing:
-                parts.append(f"누락: {', '.join(missing)}")
-            if errors:
-                parts.append(f"오류: {', '.join(errors)}")
+        if method == "EXECUTION":
+            if missing or errors:
+                parts = []
+                if missing:
+                    parts.append(f"누락: {', '.join(missing)}")
+                if errors:
+                    parts.append(f"오류: {', '.join(errors)}")
+                return {
+                    "valid": False,
+                    "missing_params": missing,
+                    "normalized_params": normalized,
+                    "errors": errors,
+                    "requires_confirmation": False,
+                    "message": "실행 모드: " + "; ".join(parts),
+                }
+
+            # 위험도 판단: 스키마 danger OR 텍스트 패턴
+            danger_flag = bool(schema.get("danger", False))
+            text_lc = f"{intent} {text}".lower()
+            if re.search(r"\bshutdown\b", text_lc) or \
+               re.search(r"\bformat(-|_)?volume\b", text_lc) or \
+               re.search(r"\brm\s+-rf\b", text_lc) or \
+               re.search(r"clear(-|_)?recyclebin", text_lc):
+                danger_flag = True
+
             return {
-                "valid": False,
-                "missing_params": missing,
+                "valid": True,
+                "missing_params": [],
                 "normalized_params": normalized,
-                "errors": errors,
-                "requires_confirmation": False,
-                "message": "실행 모드: " + "; ".join(parts),
+                "errors": [],
+                "requires_confirmation": danger_flag,
+                "message": "실행 모드: 모든 파라미터가 준비되었습니다.",
             }
-            
+
+        # 알 수 없는 method
         return {
-            "valid": True,
+            "valid": False,
             "missing_params": [],
-            "normalized_params": normalized,
-            "errors": [],
-            "requires_confirmation": bool(schema.get("danger", False)),
-            "message": "실행 모드: 모든 파라미터가 준비되었습니다.",
+            "normalized_params": {},
+            "errors": [f"지원하지 않는 method: {method}"],
+            "requires_confirmation": False,
+            "message": "잘못된 실행 방법입니다.",
         }
 
     # ───────────────────────────────────────────────
@@ -266,13 +356,10 @@ class ValidatorService:
         if not text:
             return {}
 
-        # intent → function_key
+        # intent → function_key (DB 우선, 없으면 별칭 폴백)
         function_key = self._get_function_key_from_intent(intent)
         if not function_key:
             return {}
-
-        # 간단 규칙 기반 추정
-        extracted: Dict[str, Any] = {}
 
         # Windows 경로 캡처(따옴표 포함 케이스 대비)
         # 예: "C:\a b\c.txt" D:\d
@@ -282,6 +369,8 @@ class ValidatorService:
             p = m.group(1) or m.group(2)
             if p:
                 paths.append(p)
+
+        extracted: Dict[str, Any] = {}
 
         if function_key == "copy_file":
             if len(paths) >= 2:
@@ -297,6 +386,19 @@ class ValidatorService:
                 extracted["old_path"] = paths[0]
                 extracted["new_path"] = paths[1]
 
+        elif function_key == "move_file":
+            if len(paths) >= 2:
+                extracted["src_path"] = paths[0]
+                extracted["dst_path"] = paths[1]
+
+        elif function_key == "create_folder":
+            # "C:\Temp\Logs"만 주어졌을 때 path/name 자동 분리
+            if paths:
+                parent, leaf = os.path.split(paths[0])
+                if parent and leaf:
+                    extracted["path"] = parent
+                    extracted["name"] = leaf
+
         elif function_key == "block_remote_access":
             text_lower = text.lower()
             if any(k in text_lower for k in ["차단", "block", "켜", "enable", "on"]):
@@ -307,7 +409,7 @@ class ValidatorService:
         return extracted
 
     def _get_function_key_from_intent(self, intent: str) -> Optional[str]:
-        """intent에서 function_key를 가져옵니다."""
+        """intent에서 function_key를 가져옵니다. DB 매핑 우선, 없으면 별칭 폴백."""
         conn = self.get_db_connection()
         try:
             cursor = conn.execute(
@@ -320,9 +422,11 @@ class ValidatorService:
                 (intent,),
             )
             row = cursor.fetchone()
-            return row["function_key"] if row else None
+            if row and row["function_key"]:
+                return row["function_key"]
         finally:
             conn.close()
+        return self._alias(intent)
 
     # ───────────────────────────────────────────────
     # 스키마 적용(정규화/검증)
