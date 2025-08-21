@@ -46,7 +46,7 @@ async def handle_user_input(request: UserRequest):
     if function_key_from_rag:
         function_key = function_key_from_rag
         # RAG 결과에서 바로 함수 정보 조회
-        fn = db_get_function_info(function_key)
+        fn = db_get_function_info(intent)
         shortcut = fn.get("shortcut") if fn else ""
     else:
         # 기존 방식으로 function_key 조회
