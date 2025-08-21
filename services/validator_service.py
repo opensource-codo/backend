@@ -76,7 +76,7 @@ class ValidatorService:
                 SELECT param_name, param_type, required, default_json, choices_json, description
                 FROM intent_param
                 WHERE function_id = ?
-                ORDER BY required DESC, name ASC
+                ORDER BY required DESC
                 """,
                 (function_key,),
             )
@@ -90,8 +90,8 @@ class ValidatorService:
         required, optional = [], []
         for r in rows:
             spec: Dict[str, Any] = {
-                "name": r["name"],
-                "type": r["type"] or "str",
+                "name": r["param_name"],
+                "type": r["param_type"] or "str",
                 "description": r["description"] or "",
             }
             if r["default_json"]:
@@ -159,7 +159,7 @@ class ValidatorService:
                 """
                 SELECT f.function_key AS fk
                 FROM intents i
-                LEFT JOIN functions f ON i.function_id = f.id   
+                LEFT JOIN functions f ON i.function_id = f.function_key   
                 WHERE i.intent = ?
                 """,
                 (intent,),
@@ -278,7 +278,7 @@ class ValidatorService:
     # ───────────────────────────────────────────────
     # 검증 메인
     # ───────────────────────────────────────────────
-    def validate(self, intent: str, parameters: Dict[str, Any], text: str = "") -> Dict[str, Any]:
+    def validate(self, intent: str, parameters: Dict[str, Any], text: str = "", method = "EXECUTION") -> Dict[str, Any]:
         """
         intent와 파라미터를 검증합니다.
         """
@@ -567,4 +567,4 @@ def validate(intent: str, parameters: Dict[str, Any], text: str = "") -> Dict[st
     기존 코드와의 호환성을 위한 함수입니다.
     validator_service.validate()를 호출합니다.
     """
-    return validator_service.validate(intent, parameters, text)
+    return validator_service.validate(intent, parameters, text, method = "EXECUTION")
