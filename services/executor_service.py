@@ -1,4 +1,3 @@
-# services/executor_service.py
 import asyncio
 import os
 import shlex
@@ -255,6 +254,14 @@ class ShutdownPlanner(ActionPlanner):
         cmd = "shutdown /r /t 0"
         # 위험 분류에 의해 requiresConfirmation 자동 True
         return _make_shell_exec("shutdown", cmd)
+
+# 추가: 제어판 열기
+@register("open_control_panel")
+class OpenControlPanelPlanner(ActionPlanner):
+    async def plan(self, params: Dict[str, Any]) -> PlanResult:
+        # 단순 실행: control.exe
+        cmd = "control.exe"
+        return _make_shell_exec("open_control_panel", cmd, shortcut="Win+R → control")
 
 # (예시) 커스텀 플래너: 핫키
 @register("paste")

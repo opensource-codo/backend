@@ -277,8 +277,8 @@ async def generate_guide_response(
     if show_commands and advanced_md:
         # 요구사항 문구 반영
         header = (
-            "**가장 쉬운 방법: 클릭만 안내**\n\n"
-            "필요하면 아래 **‘고급’** 버튼을 눌러 명령어를 확인하세요."
+            "가장 쉬운 방법: 클릭만 안내\n\n"
+            "필요하면 아래 ‘고급’ 버튼을 눌러 명령어를 확인하세요."
         )
         return f"{header}\n\n{basic_md}\n\n---\n\n{advanced_md}"
 
@@ -309,7 +309,7 @@ async def generate_guide_payload(
     basic_md = await _polish_markdown_with_llm(basic_md, intent, message)
 
     # 최종 사용자 표현 스펙 반영
-    header = "**가장 쉬운 방법: 클릭만 안내**\n\n"
+    header = "가장 쉬운 방법: 클릭만 안내\n\n"
     hint = "\n\n_필요하면 아래 ‘고급’ 버튼을 눌러 명령어 보기_." if has_advanced else ""
     message_markdown = header + basic_md + hint
 
