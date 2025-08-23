@@ -1,5 +1,9 @@
 import json
 import os
+
+os.environ["CHROMADB_DEFAULT_EMBEDDING_FUNCTION"] = "none"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 import sys
 from typing import List, Dict
 
@@ -53,7 +57,6 @@ def isolated_chroma(tmp_path, monkeypatch):
     """Redirect Chroma persistence to a tmp directory for both modules."""
     db_dir = tmp_path / "chroma_test_real"
     db_dir.mkdir(parents=True, exist_ok=True)
-
     original_pc = chromadb.PersistentClient
 
     def make_client(path=None, *args, **kwargs):

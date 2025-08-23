@@ -1,5 +1,6 @@
 # build_embed_chroma.py
 import os, sqlite3, math
+os.environ["CHROMADB_DEFAULT_EMBEDDING_FUNCTION"] = "none"  
 from typing import Dict, List
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -60,6 +61,7 @@ def chunk(lst, size):
         yield lst[i:i+size]
 
 def main():
+    print("build_embed_chroma.py 실행")
     load_dotenv()
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -97,8 +99,9 @@ def main():
     if not docs:
         print("No docs to embed")
         return
-
+    
     # 3) 임베딩 생성 (배치)
+    print("3) 임베딩 생성")
     vectors = []
     BATCH = 128
     for batch_texts in chunk(docs, BATCH):
@@ -108,12 +111,15 @@ def main():
     assert len(vectors) == len(docs)
 
     # 4) Chroma 업서트
+    print("4) Chroma 업서트")
     client = chromadb.PersistentClient(path="./chroma_db")
     # cosine 공간 사용(기본값도 괜찮지만 명시)
+    print("get_or_create_collection 실행")
     collection = client.get_or_create_collection(
         name="intents",
         metadata={"hnsw:space": "cosine"}
     )
+    print("upsert 실행")
     collection.upsert(
         ids=ids,
         documents=docs,
