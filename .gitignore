@@ -3,6 +3,13 @@ logs/
 
 .env
 venv/
-
+.venv/
 api\v1\__pycache__
 *.pyc
+
+chroma_db/
+.bin
+
+.claude/
+claude/
+*.md

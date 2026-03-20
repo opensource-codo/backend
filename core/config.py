@@ -1,4 +1,4 @@
-from pydantic import BaseSettings
+from pydantic_settings import BaseSettings
 from typing import Optional
 
 class Settings(BaseSettings):
@@ -7,11 +7,14 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Intent Analysis API"
     
     # 데이터베이스 설정
-    DATABASE_URL: str = "intents.db"
+    DATABASE_URL: str = "assistant.db"
     
     # OpenAI 설정
     OPENAI_API_KEY: Optional[str] = None
     
+    # 유사도 임계값
+    SIM_THRESHOLD: float = 0.28
+
     # 로깅 설정
     LOG_LEVEL: str = "INFO"
     LOG_FILE: str = "server.log"
