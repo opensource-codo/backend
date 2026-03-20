@@ -11,4 +11,4 @@ chroma_db/
 .bin
 
 ./claude
-.md
+*.md
