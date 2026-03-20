@@ -6,6 +6,7 @@ import os
 from dotenv import load_dotenv
 from db.database import get_function_info as db_get_function_info
 from services.search_chroma import search_intent
+from core.config import settings
 load_dotenv()
 
 api_key = os.getenv("OPENAI_API_KEY")
@@ -13,8 +14,6 @@ if not api_key:
     raise ValueError("OPENAI_API_KEY 환경변수가 설정되지 않았습니다.")
 
 llm = ChatOpenAI(api_key=api_key)
-
-SIM_THRESHOLD = 0.3
 
 async def extract_intent_with_rag(text: str) -> Dict[str, Any]:
     """
@@ -33,7 +32,7 @@ async def extract_intent_with_rag(text: str) -> Dict[str, Any]:
         similarity = best_match.get('score', 0.0)
         
         # 유사도가 SIM_THRESHOLD 이상인 경우에만 RAG 결과 사용
-        if similarity >= SIM_THRESHOLD:
+        if similarity >= settings.SIM_THRESHOLD:
             return {
                 "intent": best_match.get('intent', ''),
                 "function_key": best_match.get('function_key', ''),

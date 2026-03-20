@@ -10,37 +10,33 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 sys.path.insert(0, parent_dir)
 
-import asyncio
-from services.guide_service import generate_guide_response 
-import services.guide_service as guide_service
-from services.table_embedding import ChromaDBEmbedding, create_embedding_instance, search_intent_from_query
+from services.ui_guide_service import build_ui_guide
 
-async def guide_response_shortcut():
+def guide_response_shortcut():
     # 예시 입력
-    intent = "붙여넣기"
-    shortcut = "Ctrl+V"
-    message = "붙여넣기 하는 방법 알려줘"
+    function_key = "open_taskmgr"
+    function_row = {"function_name": "작업 관리자 열기", "shortcut": "Ctrl+Shift+Esc"}
 
     # 가이드 답변 생성
-    response = await generate_guide_response(message, intent, shortcut)
+    response = build_ui_guide(function_key, function_row)
 
     # 결과 출력
     print("=== 단축키 가이드 응답 ===")
-    print(response)
-    
-async def guide_response_no_shortcut():
+    print(response.get("message_markdown", ""))
+
+def guide_response_no_shortcut():
     # 예시 입력
-    intent = "붙여넣기"
-    message = "붙여넣기 하는 방법 알려줘"
+    function_key = "empty_recycle_bin"
+    function_row = {"function_name": "휴지통 비우기"}
 
     # 가이드 답변 생성
-    response = await generate_guide_response(message, intent)
+    response = build_ui_guide(function_key, function_row)
 
     # 결과 출력
     print("=== 단축키X 가이드 응답 ===")
-    print(response)
+    print(response.get("message_markdown", ""))
 
 if __name__ == "__main__":
-    asyncio.run(guide_response_shortcut())
+    guide_response_shortcut()
     print("\n")
-    asyncio.run(guide_response_no_shortcut())
+    guide_response_no_shortcut()

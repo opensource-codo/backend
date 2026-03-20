@@ -8,6 +8,12 @@ from openai import OpenAI
 
 _client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+
+def set_openai_client(client) -> None:
+    global _client
+    _client = client
+
+
 def _prop_for_type(t: str, spec: Dict[str, Any]) -> Dict[str, Any]:
     desc = (spec.get("description") or "").strip()
     if t == "bool":

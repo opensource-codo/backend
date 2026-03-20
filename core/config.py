@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     # OpenAI 설정
     OPENAI_API_KEY: Optional[str] = None
     
+    # 유사도 임계값
+    SIM_THRESHOLD: float = 0.28
+
     # 로깅 설정
     LOG_LEVEL: str = "INFO"
     LOG_FILE: str = "server.log"

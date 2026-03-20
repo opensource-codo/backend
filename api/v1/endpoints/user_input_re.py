@@ -1,11 +1,10 @@
 # api/v1/endpoints/user_input_re.py
 from __future__ import annotations
 
-from typing import Dict, Any, Optional
+from typing import Optional
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, Field
 
-from services.guide_service import generate_guide_response
+from services.ui_guide_service import build_ui_guide
 from services.intent_service import extract_intent_with_rag, db_get_function_info, search_similar_intents
 from services.validator_service import validate, validator_service, validate_text_parameters
 from services.executor_service import plan_action
@@ -15,13 +14,14 @@ from services import table_access  # script_command/shortcut 폴백 조회가 �
 
 from schemas.intent import UserRequest, MethodName
 from schemas.intent import IntentResponse  # 확장 IntentResponse
+from schemas.requests import ContinueRequest, ConfirmRequest
+from core.config import settings
 
 # ─────────────────────────────────────────────
 # Logging 설정
 # ─────────────────────────────────────────────
 import os, json, logging
 router = APIRouter()
-SIM_THRESHOLD = 0.2  # 임베딩 수정 후 재조정 권장
 
 LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -37,19 +37,6 @@ if not logger.handlers:
     ch.setFormatter(fmt)
     logger.addHandler(ch)
     logger.setLevel(logging.INFO)
-
-
-# --- 새 요청 스키마 ---
-class ContinueRequest(BaseModel):
-    interaction_id: str
-    parameters: Dict[str, Any] = Field(default_factory=dict)
-    text: Optional[str] = None
-    method: MethodName = MethodName.EXECUTION  # 보강도 EXECUTION 기준 검증
-
-
-class ConfirmRequest(BaseModel):
-    interaction_id: str
-    confirm: bool = True
 
 
 def _mth(v) -> str:
@@ -149,7 +136,8 @@ async def handle_user_input(payload: UserRequest, req: Request):
 
     # 3) GUIDE
     if payload.method == MethodName.GUIDE:
-        guide = await generate_guide_response(payload.text, intent, shortcut)
+        guide_result = build_ui_guide(function_key or intent, fn or {})
+        guide = guide_result.get("message_markdown", "")
         out = IntentResponse(
             intent=intent,
             method=payload.method,
@@ -193,7 +181,7 @@ async def handle_user_input(payload: UserRequest, req: Request):
         return out
 
     # 유사도 낮음 처리(단, 별칭/폴백으로 function_key가 잡혀 있으면 통과)
-    if similarity < SIM_THRESHOLD and not function_key_from_rag and not function_key:
+    if similarity < settings.SIM_THRESHOLD and not function_key_from_rag and not function_key:
         alts = await search_similar_intents(payload.text, n_results=5)
         out = IntentResponse(
             intent=intent,

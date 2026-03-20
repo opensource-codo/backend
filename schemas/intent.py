@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Any, Dict, List, Optional, Literal, Union
+from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -63,7 +63,7 @@ class IntentResponse(BaseModel):
 
     interaction_id: Optional[str] = None
     similarity: Optional[float] = None
-    method_used: Optional[Literal["rag", "llm"]] = None
+    method_used: Optional[str] = None
     shortcut: Optional[str] = None
 
     # ✅ dict 또는 string 모두 허용 (플래너가 dict 반환해도 OK)
