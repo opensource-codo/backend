@@ -10,7 +10,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 sys.path.insert(0, parent_dir)
 
-from services.table_embedding import ChromaDBEmbedding, create_embedding_instance, search_intent_from_query
+from scripts.table_embedding import ChromaDBEmbedding, create_embedding_instance, search_intent_from_query
 
 def test_embedding():
     """임베딩 기능을 테스트합니다."""

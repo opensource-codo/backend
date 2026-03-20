@@ -11,8 +11,8 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 sys.path.insert(0, parent_dir)
 
-from db.database import get_db_connection, get_required_params, get_function_info
-from db.assistantdb import get_assistant_db, get_all_functions, get_required_params as get_assistant_required_params
+from db.database import get_db_connection, get_required_params, get_function_info, get_assistant_db, get_all_functions
+get_assistant_required_params = get_required_params
 
 def test_database_connection():
     """데이터베이스 연결을 테스트합니다."""

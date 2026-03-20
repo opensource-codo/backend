@@ -56,16 +56,16 @@ def guess_aliases(intent: str, function_key: str) -> List[str]:
 
     if any(k in intent for k in ["붙여넣", "붙여", "paste"]) or "paste" in fkey:
         aliases.update(["파일 붙여넣기", "paste file", "Ctrl+V"])
-        
+
     if any(k in intent for k in ["복사", "copy"]) or "copy" in fkey:
         aliases.update(["파일 복사", "copy file", "Ctrl+C"])
-        
+
     if any(k in intent for k in ["잘라내", "자르기", "cut"]) or "cut" in fkey:
         aliases.update(["파일 잘라내기", "cut file", "Ctrl+X"])
-        
+
     if any(k in intent for k in ["변경", "이름", "rename"]) or "rename" in fkey:
         aliases.update(["파일 이름 변경", "rename file", "F12"])
-        
+
     # 제어판
     if any(k in intent for k in ["제어판", "control panel", "컨트롤 패널"]) or "control_panel" in fkey:
         aliases.update(["제어판", "Control Panel", "control panel", "컨트롤 패널"])
@@ -79,7 +79,7 @@ def guess_aliases(intent: str, function_key: str) -> List[str]:
         aliases.update(["재시작", "다시 시작", "restart", "win restart"])
     if any(k in intent for k in ["종료", "끄기", "shutdown"]) or "shutdown" in fkey:
         aliases.update(["종료", "shutdown", "전원 끄기"])
-    
+
 
     if "프린터" in intent and any(k in intent for k in ["초기화", "재설정", "리셋"]):
         aliases.update(["프린터 초기화", "프린터 재설정", "프린터 리셋", "인쇄 초기화", "print reset"])
@@ -118,20 +118,20 @@ class ChromaDBEmbedding:
     def __init__(self, db_path: str = "assistant.db", chroma_persist_directory: str = "./chroma_db"):
         """
         ChromaDB 임베딩 클래스 초기화
-        
+
         Args:
             db_path: SQLite 데이터베이스 경로
             chroma_persist_directory: ChromaDB 저장 디렉토리
         """
         self.db_path = db_path
         self.chroma_persist_directory = chroma_persist_directory
-        
+
         # 컬렉션 속성들을 None으로 초기화
         self.intents_collection = None
         self.functions_collection = None
         self.help_contents_collection = None
         self.unified_collection = None
-        
+
         # ChromaDB 클라이언트 초기화
         try:
             self.client = chromadb.PersistentClient(
@@ -140,14 +140,14 @@ class ChromaDBEmbedding:
                     anonymized_telemetry=False
                 )
             )
-            
+
             # 컬렉션 초기화
             self._init_collections()
         except Exception as e:
             print(f"ChromaDB 초기화 중 오류 발생: {e}")
             # 오류 발생 시에도 기본 컬렉션 객체 생성
             self._create_dummy_collections()
-    
+
     def _create_dummy_collections(self):
         """오류 발생 시 더미 컬렉션을 생성합니다."""
         try:
@@ -157,7 +157,7 @@ class ChromaDBEmbedding:
                 metadata={"description": "더미 컬렉션"}
             )
             self.functions_collection = self.client.get_or_create_collection(
-                name="functions_dummy", 
+                name="functions_dummy",
                 metadata={"description": "더미 컬렉션"}
             )
             self.help_contents_collection = self.client.get_or_create_collection(
@@ -170,7 +170,7 @@ class ChromaDBEmbedding:
             )
         except Exception as e:
             print(f"더미 컬렉션 생성 실패: {e}")
-    
+
     def _openai_embedding_function(self, texts):
         """OpenAI 임베딩 함수 (배치 처리)"""
         embeddings = []
@@ -196,7 +196,7 @@ class ChromaDBEmbedding:
                     # 오류 시 0으로 채워진 벡터 반환
                     embeddings.append([0.0] * 1536)  # text-embedding-3-small의 차원
         return embeddings
-    
+
     def _init_collections(self):
         """ChromaDB 컬렉션들을 초기화합니다."""
         try:
@@ -205,42 +205,42 @@ class ChromaDBEmbedding:
                 name="intents",
                 metadata={"description": "사용자 의도(intent) 데이터"}
             )
-            
+
             # functions 컬렉션
             self.functions_collection = self.client.get_or_create_collection(
                 name="functions",
                 metadata={"description": "함수 정보 데이터"}
             )
-            
+
             # help_contents 컬렉션
             self.help_contents_collection = self.client.get_or_create_collection(
                 name="help_contents",
                 metadata={"description": "도움말 내용 데이터"}
             )
-            
+
             # 통합 검색용 컬렉션
             self.unified_collection = self.client.get_or_create_collection(
                 name="unified_intents",
                 metadata={"description": "intent 통합 문서", "hnsw:space": "cosine"}
             )
-            
+
             print("ChromaDB 컬렉션이 성공적으로 초기화되었습니다.")
-            
+
         except Exception as e:
             print(f"컬렉션 초기화 중 오류 발생: {e}")
             raise e
-    
+
     def get_db_connection(self):
         """SQLite 데이터베이스 연결을 반환합니다."""
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
-    
+
     def embed_text(self, text: str) -> List[float]:
         """OpenAI Embedding API로 텍스트를 임베딩합니다."""
         try:
             response = openai_client.embeddings.create(
-                model="text-embedding-3-small", 
+                model="text-embedding-3-small",
                 input=[text]
             )
             return response.data[0].embedding
@@ -338,7 +338,7 @@ class ChromaDBEmbedding:
             ids=ids
         )
         print(f"[임베딩 완료] 의도 {len(rows)}건 → 문서 {len(ids)}건(뷰 3배) 추가")
-    
+
     def find_best_intent(
         self,
         query: str,
@@ -472,7 +472,7 @@ class ChromaDBEmbedding:
             },
         }
 
-    
+
     def search_intent(self, query: str, n_results: int = 5) -> List[Dict[str, Any]]:
         """
         기존 시그니처 유지용 래퍼.
@@ -505,14 +505,14 @@ class ChromaDBEmbedding:
                 "similarity": c["score"],
             })
         return out
-    
+
     def search_by_collection(self, query: str, collection_name: str = "intents", n_results: int = 5):
         """특정 컬렉션에서 검색합니다."""
         collection_attr = f"{collection_name}_collection"
         if not hasattr(self, collection_attr) or getattr(self, collection_attr) is None:
             print(f"{collection_name} 컬렉션이 초기화되지 않았습니다.")
             return []
-            
+
         try:
             collection = getattr(self, collection_attr)
             results = collection.query(
@@ -520,7 +520,7 @@ class ChromaDBEmbedding:
                 n_results=n_results,
                 include=['metadatas', 'distances']
             )
-            
+
             return [
                 {
                     "metadata": metadata,
@@ -531,7 +531,7 @@ class ChromaDBEmbedding:
         except Exception as e:
             print(f"{collection_name} 컬렉션 검색 중 오류 발생: {e}")
             return []
-    
+
     def embed_all_data(self):
         """모든 테이블의 데이터를 임베딩합니다."""
         print("데이터 임베딩을 시작합니다...")
@@ -549,6 +549,6 @@ def search_intent_from_query(query: str, embedding_db: ChromaDBEmbedding = None)
     """사용자 쿼리로부터 intent를 검색합니다."""
     if embedding_db is None:
         embedding_db = ChromaDBEmbedding()
-    
+
     results = embedding_db.search_intent(query)
     return results

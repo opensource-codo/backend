@@ -54,7 +54,7 @@ def get_require_params(intent: str):
     """, (intent,))
     row = cursor.fetchone()
     conn.close()
-    
+
     if row:
         return {
             "function_id": row["function_id"],
@@ -65,6 +65,15 @@ def get_require_params(intent: str):
             "function_id": "",
             "require_params": ""
         }
-    
-  
-    
+
+
+def get_all_functions():
+    conn = get_db_connection()
+    cursor = conn.execute("SELECT * FROM functions")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+# assistantdb.py 호환 별칭
+get_assistant_db = get_db_connection

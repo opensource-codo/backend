@@ -1,6 +1,6 @@
 # build_embed_chroma.py
 import os, sqlite3, math
-os.environ["CHROMADB_DEFAULT_EMBEDDING_FUNCTION"] = "none"  
+os.environ["CHROMADB_DEFAULT_EMBEDDING_FUNCTION"] = "none"
 from typing import Dict, List
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -99,7 +99,7 @@ def main():
     if not docs:
         print("No docs to embed")
         return
-    
+
     # 3) 임베딩 생성 (배치)
     print("3) 임베딩 생성")
     vectors = []
