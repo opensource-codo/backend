@@ -9,3 +9,6 @@ api\v1\__pycache__
 
 chroma_db/
 .bin
+
+./claude
+.md
