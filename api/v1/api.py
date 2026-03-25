@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from api.v1.endpoints import user_input, user_input_re
+from api.v1.endpoints import user_input_re
 from api.v1.guide import router as guide_router
 
 api_router = APIRouter()
